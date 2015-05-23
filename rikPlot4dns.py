@@ -564,8 +564,9 @@ if __main__:
         for il,lbl in enumerate(lblList):
             if len(allLigLists[lbl]) != ntotlig:
                 missingLig = allLig - set(allLigLists[lbl])
+                # NB: truncate dataSrc to last 25 chars
                 print '%s\t%s\t%d\t%d' % \
-                (lbl,dataSourceList[il],len(allLigLists[lbl]),len(missingLig))
+                (lbl,dataSourceList[il][-25:],len(allLigLists[lbl]),len(missingLig))
                 ## Extend lists with any missing ones
                 
                 allLigLists[lbl] += list(missingLig)
