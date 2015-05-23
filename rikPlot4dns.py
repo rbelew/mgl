@@ -394,27 +394,33 @@ def getLigands2(inf):
     ligands=[]
     for i,entry in enumerate(reader):
         # Ligand,Actual,Predict,PrTrue,Err,E,FPRate,TPRate
-        ligands.append(entry['Ligand'])
+        try:
+            ligands.append(entry['Ligand'])
+        except Exception, e:
+            print 'huh',e 
+            print
     return ligands
 
 def getDNSRankings(inf):
 
     ligands = []
-    allLists = [ [] for i in range(4)]
+    allTbl = [ {} for i in range(4)]
     ligColNum=0
     colNum = [2,3,4,5]
 
     reader = csv.reader(open(inf))
     for row in reader:
-        ligands.append(row[ligColNum])
+        lig = row[ligColNum]
+        ligands.append(lig)
         for i in range(4):
-            allLists[i].append(float(row[colNum[i]]))
+            allTbl[i][lig] = float(row[colNum[i]])
         
     allDataTbl = {}
     for i in range(4):
         lbl = 's%d' % (i+1)
         newList = ligands[:]
-        allDataTbl[lbl] = newList.sort(key=allLists[i],reverse=True)
+        newList.sort(key=lambda lig: allTbl[i][lig],reverse=True)
+        allDataTbl[lbl] = newList
         
     return allDataTbl
     
@@ -510,7 +516,7 @@ if __main__:
         
         dataSrc = dataFile[:-4] # drop '.csv'
         # 2do-HACK: use "_dns" to flag DNS's result files
-        if dataSrc.find('_dns.csv') != -1:
+        if dataSrc.find('_dns') != -1:
             allEvalTbl = getDNSRankings(DataDir+dataFile) # elbl -> ligands
             # original DNS, for comparison
             s1_list, s2_list, s3_list, s4_list = get_ipa_rankings(DataDir+dataFile)
@@ -521,9 +527,12 @@ if __main__:
                     print 'rikPlot4dns: duplicate data label1?!',elbl
                     continue
                 
-                dataSourceList += dataSrc + '_%s' % (elbl)
-                lblList += elbl
-                ligands, docking = allEvalTbl[elbl]
+                dataSourceList.append(dataSrc)
+                # NB: this breaks elbl into characters, then adds each character
+                # lblList += elbl  
+                lblList.append(elbl)
+                
+                ligands = allEvalTbl[elbl]
                 allLigLists[elbl] = ligands
                 statDict = analyzeSlist(ligands)
                 confusion_data[elbl] = statDict
@@ -535,7 +544,7 @@ if __main__:
             if lbl in allLigLists:
                 print 'rikPlot4dns: duplicate data label2?!',lbl
                 continue
-            dataSourceList += dataSrc + '_%s' % (lbl)
+            dataSourceList.append(dataSrc)
             lblList += lbl
             ligands = getLigands2(DataDir+dataFile)
             # original DNS, for comparison
@@ -546,18 +555,29 @@ if __main__:
             statDict = analyzeSlist(ligands)
             confusion_data[lbl] = statDict
          
-    # Confirm that all ligand lists are coextensive
+    ## Confirm that all ligand lists are coextensive
     allLig = set()
     for il,lbl in enumerate(lblList):
         allLig = allLig | set(allLigLists[lbl])
     ntotlig = len(allLig)
+    print 'rikPlot4dns: NDataSets=%d NLigands=%d Labels=%s' % (len(lblList),ntotlig,lblList)
     if not all([len(allLigLists[lbl])==ntotlig for lbl in lblList]):
         print 'rikPlot4dns: Ligand lists mismatch?!  Union=%d' % (ntotlig)
+
+        print 'Lbl\t% 25s\tNLig\tNMiss' % ('DataSource')
         for il,lbl in enumerate(lblList):
-            print '%s\t%s\t%d' % (lbl,dataSourceList[il],len(allLigLists[lbl]))
-        sys.exit( 'rikPlot4dns: Ligand lists mismatch?!' )
+            if len(allLigLists[lbl]) != ntotlig:
+                missingLig = allLig - set(allLigLists[lbl])
+                print '%s\t%s\t%d\t%d' % \
+                (lbl,dataSourceList[il],len(allLigLists[lbl]),len(missingLig))
+                ## Extend lists with any missing ones
+                
+                allLigLists[lbl] += list(missingLig)
+            
+        # Try again
+        if not all([len(allLigLists[lbl])==ntotlig for lbl in lblList]):   
+            sys.exit( 'rikPlot4dns: Ligand lists STILL mismatch?!' )
     
-    print 'rikPlot4dns: NDataSets=%d NLigands=%d Labels=%s' % (len(lblList),ntotlig,lblList)
 
     # output data
     ef_fractionList = [0.001, 0.002, 0.01, 0.05, 0.1, 0.2]
