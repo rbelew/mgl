@@ -500,7 +500,7 @@ if __main__:
         Actives.append(active.strip())
     fs.close()
     nactive=len(Actives)
-    print 'rikPlot4dns: %d Actives read from %s' % (nactive,actives_file)
+    print 'rikPlot4dns: Run=%s %d Actives read from %s' % (RunName,nactive,actives_file)
 
     # NB: original argv ordering of dataSrc and their labels maintained
     lblList = []
@@ -511,9 +511,11 @@ if __main__:
     for dataFile in sys.argv[1:]:
         
         dataSrc = dataFile[:-4] # drop '.csv'
+        rbpos = dataSrc.rfind('_')
+        lbl = dataSrc[rbpos+1:]
         # 2do-HACK: use "_dns" to flag DNS's result files
-        if dataSrc.find('_dns') != -1:
-            allEvalTbl = getDNSRankings(DataDir+dataFile) # elbl -> ligands
+        if lbl=='dns':
+            allEvalTbl = getDNSRankings(DataDir+dataFile) # eRunName -> ligands
             # original DNS, for comparison
             s1_list, s2_list, s3_list, s4_list = get_ipa_rankings(DataDir+dataFile)
             allElbls = allEvalTbl.keys()
@@ -556,11 +558,11 @@ if __main__:
     for il,lbl in enumerate(lblList):
         allLig = allLig | set(allLigLists[lbl])
     ntotlig = len(allLig)
-    print 'rikPlot4dns: NDataSets=%d NLigands=%d Labels=%s' % (len(lblList),ntotlig,lblList)
+    print 'rikPlot4dns: Run=%sNDataSets=%d NLigands=%d Labels=%s' % (RunName,len(lblList),ntotlig,lblList)
     if not all([len(allLigLists[lbl])==ntotlig for lbl in lblList]):
         print 'rikPlot4dns: Ligand lists mismatch?!  Union=%d' % (ntotlig)
 
-        print 'Lbl\t% 25s\tNLig\tNMiss' % ('DataSource')
+        print 'Label\t% 25s\tNLig\tNMiss' % ('DataSource')
         for il,lbl in enumerate(lblList):
             if len(allLigLists[lbl]) != ntotlig:
                 missingLig = allLig - set(allLigLists[lbl])
@@ -577,7 +579,6 @@ if __main__:
     
 
     # output data
-    ef_fractionList = [0.001, 0.002, 0.01, 0.05, 0.1, 0.2]
     ROCLevelList=['100','10','1'] 
     
     Colors=['r','k','b','m','g','c','o']
@@ -585,61 +586,77 @@ if __main__:
             
     # plot and calculate/process
 
-    plot_ef5_rocAlt('initTst',lblList,confusion_data)
+    plot_ef5_rocAlt(RunName,lblList,confusion_data)
 
-    roc_auc_list = plot_roc5('initTst',lblList,confusion_data)
+    roc_auc_list = plot_roc5(RunName,lblList,confusion_data)
+
+    ef_fractionList = [0.001, 0.002, 0.01, 0.05, 0.1, 0.2]
+    alphaList = [10, 20, 30, 40, 50, 100, 500] # bedroc, rie
     
-#     datOutFile = lig_set+'_dat.csv'
+    datOutFile = DataDir + RunName+'_dat.csv'
+    
+    ## wazzup with datOutFileCount?!
 #     datOutFileCount=0
-#     datHeader='LigSet,Score,Data,SubData,Value\n'
-#     
+#      
 #     while os.path.isfile(datOutFile):
 #         datOutFileCount+=1
 #         datOutFile = lig_set+'_dat-'+str(datOutFileCount)+'.csv'
-#     
-#     ds=open(datOutFile,'w')
-#     ds.write(datHeader)
-#     
-#     for confusion_key in confusion_data:
-#         pLig, pDec, fpr,tpr,ef_dat,datType, auac, rie_dat, bedroc_dat = confusion_data[confusion_key]
-#     
-#         #AUAC
-#         auac_line='%s,%s,%s,%s,%.4f\n' % (lig_set,datType,'auac','-',auac)
-#         ds.write(auac_line)
-#         
-#         #AUC
-#         for rocLevel in rocLevelList:
-#             auc_line='%s,%s,%s,%s,%.4f\n' % (lig_set,datType,'auc',str(rocLevel),roc_auc_list[rocLevel][datType])
-#             ds.write(auc_line)
-#         
-#         #BEDROC
-#         for alpha in alphaList:
-#             #print 'bedroc_dat[int(alpha)]',bedroc_dat[int(alpha)] = (bedroc,alphaRa)
-#             bedroc_line='%s,%s,%s,%s,%.4f\n' % (lig_set,datType,'bedroc',str(alpha),bedroc_dat[int(alpha)][0])
-#             ds.write(bedroc_line)
-#     
-#         # EF
-#         # ef_dat = [ (samp, ef_now, thing, rank) ]
-#         get_ef={}
-#         for ef_fraction in ef_fractionList:
-#             get_ef[ef_fraction]={}
-#             get_ef[ef_fraction]['flag']=1
-#         past_ef=0
-#         now_ef=0
-#         for ef_data in ef_dat:
-#             samp, ef_now, thing, rank = ef_data
-#             for ef_fraction in ef_fractionList:
-#                 if get_ef[ef_fraction]['flag']:
-#                     if samp > ef_fraction:
-#                         #get_ef[ef_fraction]['value']=ef_now
-#                         ef_line='%s,%s,%s,%s,%.4f\n' % (lig_set,datType,'ef',str(ef_fraction),ef_now)
-#                         ds.write(ef_line)
-#                         get_ef[ef_fraction]['flag'] =0
-#         del get_ef
-#         
-#         #RIE
-#         for alpha in alphaList:
-#             rie_line='%s,%s,%s,%s,%.4f\n' % (lig_set,datType,'rie',str(alpha),rie_dat[int(alpha)])
-#             ds.write(rie_line)
-#     
-#     ds.close()
+     
+    ds=open(datOutFile,'w')
+    datHeader='LigSet,Score,Data,SubData,Value\n'
+    ds.write(datHeader)
+     
+    for il,lbl in enumerate(lblList):
+        statDict = confusion_data[lbl]
+        pLig = statDict['pLig']
+        pDec = statDict['pDec']
+        fpr = statDict['fpr']
+        tpr = statDict['tpr']
+        ef_dat = statDict['ef_dat']
+        auac = statDict['auac']
+        rie_dat = statDict['rie_dat']
+        bedroc_dat = statDict['bedroc_dat']
+        
+        # ligands = allLigLists[RunName]
+
+     
+        #AUAC
+        auac_line='%s,%s,%s,%s,%.4f\n' % (RunName,lbl,'auac','-',auac)
+        ds.write(auac_line)
+         
+        #AUC
+        for rocLevel in ROCLevelList:
+            auc_line='%s,%s,%s,%s,%.4f\n' % (RunName,lbl,'auc',str(rocLevel),roc_auc_list[rocLevel][lbl])
+            ds.write(auc_line)
+         
+        #BEDROC
+        for alpha in alphaList:
+            #print 'bedroc_dat[int(alpha)]',bedroc_dat[int(alpha)] = (bedroc,alphaRa)
+            bedroc_line='%s,%s,%s,%s,%.4f\n' % (RunName,lbl,'bedroc',str(alpha),bedroc_dat[int(alpha)][0])
+            ds.write(bedroc_line)
+     
+        # EF
+        # ef_dat = [ (samp, ef_now, thing, rank) ]
+        get_ef={}
+        for ef_fraction in ef_fractionList:
+            get_ef[ef_fraction]={}
+            get_ef[ef_fraction]['flag']=1
+        past_ef=0
+        now_ef=0
+        for ef_data in ef_dat:
+            samp, ef_now, thing, rank = ef_data
+            for ef_fraction in ef_fractionList:
+                if get_ef[ef_fraction]['flag']:
+                    if samp > ef_fraction:
+                        #get_ef[ef_fraction]['value']=ef_now
+                        ef_line='%s,%s,%s,%s,%.4f\n' % (RunName,lbl,'ef',str(ef_fraction),ef_now)
+                        ds.write(ef_line)
+                        get_ef[ef_fraction]['flag'] =0
+        del get_ef
+         
+        #RIE
+        for alpha in alphaList:
+            rie_line='%s,%s,%s,%s,%.4f\n' % (RunName,lbl,'rie',str(alpha),rie_dat[int(alpha)])
+            ds.write(rie_line)
+     
+    ds.close()
