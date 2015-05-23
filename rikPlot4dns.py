@@ -394,11 +394,7 @@ def getLigands2(inf):
     ligands=[]
     for i,entry in enumerate(reader):
         # Ligand,Actual,Predict,PrTrue,Err,E,FPRate,TPRate
-        try:
-            ligands.append(entry['Ligand'])
-        except Exception, e:
-            print 'huh',e 
-            print
+        ligands.append(entry['Ligand'])
     return ligands
 
 def getDNSRankings(inf):
