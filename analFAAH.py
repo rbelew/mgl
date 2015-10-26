@@ -2562,12 +2562,14 @@ def bldLig2frag(ligTbl,exptName,verbose=False):
         # vs pdbqt -> mol
 
         # NB RECAP works directly from ligmol    
-        #     don't need to build canonical string
-#         ligSmilesC = obcM2C.WriteString(ligMol)
-#         # this returns both the canonSmiles string, but also PDBQT file name?!
-#         lsbits = ligSmilesC.split()
-#         canon = lsbits[0]
+        # don't need to build canonical string
+        # except to include it in bindDict
         
+        ligSmilesC = obcM2C.WriteString(ligMol)
+        # this returns both the canonSmiles string, but also PDBQT file name?!
+        lsbits = ligSmilesC.split()
+        canon = lsbits[0]
+
         # make copy in order to alter mol
         amol = ob.OBMol(ligMol)
         
