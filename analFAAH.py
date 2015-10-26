@@ -2336,7 +2336,10 @@ def mapLig2Features(ligIdx,fragments,ligMol):
         fragMol = ob.OBMol()
 
         obcC2M.ReadString(fragMol,frag)
-    
+        
+        ## TJO 151021
+        fragMol.DeleteHydrogens()
+            
         fatoms = getAtoms(fragMol)
     
         # print 'FRAGMENT',fatoms
@@ -2372,7 +2375,7 @@ def mapLig2Features(ligIdx,fragments,ligMol):
                 
     return bindDict
 
-def assignFrag(ligIdx,bindDict,errs):
+def assignFrag(ligIdx,bindDict,errs,exptName):
     '''find consistent assignment of fragments to ligand
         across alternative isomorphic maps for each fragment
         ~ branch&bound, beginning with least ambiguous fragments
@@ -2489,6 +2492,188 @@ def assignFrag(ligIdx,bindDict,errs):
     
     return fragBind
 
+def bldLig2frag(ligTbl,exptName,verbose=False):
+    '''return ligFragTbl: ligIdx -> {fragment,mapIdx,nmiss,useMap,flaNames,dropped}
+    doing RECAP fragmentation directly from PDBQT 
+    vs. separate canon,RECAP steps as in _v1
+    '''
+
+    MaxAtomMissThresh = 1
+    
+    # NB: dont use defaultdict; needs to be serializable/pickled!
+    l2fTbl = {} # ligIdx -> [ {fidx,fragment,map} ]
+    
+    l2fFile = L2FDir + exptName + '_lig2Frag.csv'
+
+    outs = open(l2fFile,'w')
+    outs.write('Ligand,FragIdx,Fragment,Map\n')
+
+    errFile = L2FDir + exptName + '_l2f_err.txt'
+    errs = open(errFile,'w')
+    
+    if verbose:
+        # initialize BindPPFile
+        vpps = open(config.BindPPFile, 'w')
+        vpps.close()
+        
+    obcP2M = ob.OBConversion()
+    obcP2M.SetInAndOutFormats('pdbqt','mol')
+    
+    obcM2C = ob.OBConversion()
+    obcM2C.SetInAndOutFormats('mol','can')
+    obcM2C.SetOptions("-i", obcM2C.OUTOPTIONS) # produce smiles without isomeric or stereo information, TJO, 9 Apr 15
+   
+    pat = ob.OBSmartsPattern();
+   
+    ngood=0
+    npoor=0
+    nslide=0
+    nerr = 0
+        
+    for iz,ligIdx in enumerate(ligTbl.keys()):
+                
+        e,batch = ligTbl[ligIdx]
+        # zincid (vs ligIdx) used for error messages
+        zincid = ligIdx2zinc(ligIdx)
+                
+        if config.RunName.startswith('focusedLib'):
+            ligand = ligIdx2zinc(ligIdx)
+            pdbqf = ProcDir + LigPathTbl[ligand]
+        else:
+            bno = int(batch)
+            pdbqf = dockFile(exptName,bno,ligIdx)
+    
+            if pdbqf == None:
+                errs.write('missing pdbqt file: %d,%s\n' % (bno,ligIdx))
+                dls = open(config.DropLigFile, 'a')
+                dls.write('%s,bldLig2Frag: missing pdbqt file: %d,%s\n' % (zincid,bno,ligIdx))
+                dls.close()
+                nerr += 1
+                continue
+        
+        ligMol = ob.OBMol()
+        obcP2M.ReadFile(ligMol,pdbqf)
+        
+        ## 2do: need to convert ligMol to canonical smiles(with -i non-iso as above)
+        # so that conventions for aromaticity are consistently SMILES vs.
+        # smiles and pdbqt
+
+        # THEN convert to mol from this pdbqt->smiles->mol
+        # vs pdbqt -> mol
+
+        # NB RECAP works directly from ligmol    
+        #     don't need to build canonical string
+#         ligSmilesC = obcM2C.WriteString(ligMol)
+#         # this returns both the canonSmiles string, but also PDBQT file name?!
+#         lsbits = ligSmilesC.split()
+#         canon = lsbits[0]
+        
+        # make copy in order to alter mol
+        amol = ob.OBMol(ligMol)
+        
+        currRecap = recap.Recap(amol,4)
+        for si,bondName in enumerate(currRecap.bondNames):
+            pat.Init(currRecap.smarts[bondName])
+            currRecap.apply(pat, si)
+        currRecap.decide_multiples()
+        currRecap.split()
+        
+        ligRecap = obcM2C.WriteString(amol,True)
+        # this returns both the canonSmiles string, but also PDBQT file name?!
+        lrbits = ligRecap.split()
+        recapStr = lrbits[0]
+        
+        fragments = recapStr.split('.')
+           
+        ###################################
+        
+        bindDict = mapLig2Features(ligIdx,fragments,ligMol)
+
+        ###################################
+        
+        # NB: augment bindDict with canon here vs. in mapLig2Features, 
+        # since obcM2C created here
+        
+        bindDict['canon'] = canon
+        
+        frag2check = range(bindDict['nfrag'])
+        badFragMap = [fi for fi in frag2check if bindDict[fi]['maps'] == None]
+        if len(badFragMap) >0:
+            ligCanon = bindDict['canon']
+            errMsg = '"%s" [ ' % bindDict['canon']
+            for fi in badFragMap:
+                errMsg += '(%d, "%s")' % (fi,bindDict[fi]['fragment'])
+            errMsg += ' ]'
+            errs.write('Missing maps: %s,%s\n' % (zincid,errMsg))
+            dls = open(config.DropLigFile, 'a')
+            dls.write('%s,bldLig2Frag: Missing maps: %s\n' % (zincid,errMsg))
+            dls.close()
+            npoor += 1
+            continue
+        
+        ###################################
+        
+        fragAssmt = assignFrag(ligIdx,bindDict,errs,exptName)
+
+        ###################################
+        
+        totMiss = 0
+        missList = []
+        for f in fragAssmt:
+            totMiss += fragAssmt[f]['nmiss']
+            missList.append(fragAssmt[f]['nmiss'])
+            
+        if verbose:
+            vpps = open(config.BindPPFile, 'a')
+            if totMiss > 0:
+                vpps.write('* %s NMiss=%d %s\n' % (zincid,totMiss,missList))
+            ppBindDict(zincid,bindDict,vpps)
+            vpps.close()
+
+        if totMiss > MaxAtomMissThresh:
+            # print 'bldLig2Frag: poor ligand: iz=%d ligIdx=%d zincid=%s totMiss=%d' % (iz,ligIdx,zincid,totMiss)
+            dls = open(config.DropLigFile, 'a')
+            dls.write('%s,bldLig2Frag: poor ligand totMiss=%d\n' % (zincid,totMiss))
+            dls.close()
+            npoor += 1
+            continue
+        
+        ngood += 1
+        
+        ligPost = 0
+        for fi,f in enumerate(fragAssmt):
+            outs.write('%s,%d,%s,"%s"\n' % (zincid,fi,fragAssmt[f]['fragment'],fragAssmt[f]['useMap']))
+
+            # NB: allow a single missing atom to slide!?
+            if fragAssmt[f]['nmiss'] <= MaxAtomMissThresh:
+                if fragAssmt[f]['nmiss'] > 0:
+                    nslide += 1
+                 
+                ligPost += 1
+                # NB: not using defaultdict, because l2fTbl needs to be serializable/pickled!
+                if ligIdx in l2fTbl:
+                    l2fTbl[ligIdx].append( fragAssmt[f].copy() )
+                else:
+                    l2fTbl[ligIdx] = [ fragAssmt[f].copy() ]
+            
+        if ligPost==0:
+            print 'bldLig2Frag: unposted lig?: iz=%d ligIdx=%d zincid=%s totMiss=%d' % (iz,ligIdx,zincid,totMiss)
+
+            dls = open(config.DropLigFile, 'a')
+            dls.write('%s,bldLig2Frag: unposted lig totMiss=%d\n' % (zincid,totMiss))
+            dls.close()
+            
+        if verbose and (iz % 1000 == 0):
+            print 'bldLig2Frag: nlig=%d nerr=%d npoor=%d' % (iz,nerr,npoor)
+                               
+    print 'bldLig2frag: NLig=%d NGood=%d NErr=%d NPoor=%d NSlide=%d' % \
+        (len(ligTbl),ngood,nerr,npoor,nslide)
+        
+    outs.close()
+    errs.close()
+    
+    return l2fTbl
+   
 def ppBindDict(zincid,bindDict,outs):
     outs.write('* %s NFrag=%d NLigAtom=%d\n' % (zincid,bindDict['nfrag'],len(bindDict['latoms'])))
     for f in range(bindDict['nfrag']):
@@ -2536,187 +2721,6 @@ def ppBindDict(zincid,bindDict,outs):
                     outStr += '   |'
             outs.write(outStr+'\n')
 
-def tstDockFile(ligTbl,exptName,verbose=False):
-    '''ala bldLig2frag(), but just make sure dockFile() works!
-    '''
-
-    nerr = 0
-    for iz,ligIdx in enumerate(ligTbl.keys()):
-                
-        e,batch = ligTbl[ligIdx]
-                
-        if config.RunName.startswith('focusedLib'):
-            ligand = ligIdx2zinc(ligIdx)
-            pdbqf = ProcDir + LigPathTbl[ligand]
-        else:
-            bno = int(batch)
-            pdbqf = dockFile(exptName,bno,ligIdx)
-        if pdbqf == None:
-            nerr += 1
-            
-    print 'tstDock: %s Nerr=%d/%d' % (exptName,nerr,len(ligTbl))
-
-def bldLig2frag(ligTbl,exptName,verbose=False):
-    '''return ligFragTbl: zincid -> {fragment,mapIdx,nmiss,useMap,flaNames,dropped}
-    doing RECAP fragmentation directly from PDBQT 
-    vs. separate canon,RECAP steps as in _v1
-    '''
-
-    MaxAtomMissThresh = 1
-    
-    # NB: dont use defaultdict; needs to be serializable/pickled!
-    l2fTbl = {} # zincid -> [ {fidx,fragment,map} ]
-    
-    l2fFile = L2FDir + exptName + '_lig2Frag.csv'
-
-    outs = open(l2fFile,'w')
-    outs.write('Ligand,FragIdx,Fragment,Map\n')
-
-    errFile = L2FDir + exptName + '_l2f_err.txt'
-    errs = open(errFile,'w')
-    
-    if verbose:
-        # initialize BindPPFile
-        vpps = open(BindPPFile, 'w')
-        vpps.close()
-        
-    obcP2M = ob.OBConversion()
-    obcP2M.SetInAndOutFormats('pdbqt','mol')
-    
-    obcM2C = ob.OBConversion()
-    obcM2C.SetInAndOutFormats('mol','can')
-    obcM2C.SetOptions("-i", obcM2C.OUTOPTIONS) # produce smiles without isomeric or stereo information, TJO, 9 Apr 15
-   
-    pat = ob.OBSmartsPattern();
-   
-    ngood=0
-    npoor=0
-    nslide=0
-    nerr = 0
-    for iz,ligIdx in enumerate(ligTbl.keys()):
-                
-        e,batch = ligTbl[ligIdx]
-                
-        if config.RunName.startswith('focusedLib'):
-            ligand = ligIdx2zinc(ligIdx)
-            pdbqf = ProcDir + LigPathTbl[ligand]
-        else:
-            bno = int(batch)
-            pdbqf = dockFile(exptName,bno,ligIdx)
-    
-            if pdbqf == None:
-                errs.write('missing pdbqt file: %s,%d,%s\n' % (exptName,bno,ligIdx))
-                nerr += 1
-                continue
-        
-        zincid = ligIdx2zinc(ligIdx)
-        
-        ligMol = ob.OBMol()
-        obcP2M.ReadFile(ligMol,pdbqf)
-
-        ligSmilesC = obcM2C.WriteString(ligMol)
-        # this returns both the canonSmiles string, but also PDBQT file name?!
-        lsbits = ligSmilesC.split()
-        canon = lsbits[0]
-       
-        # NB RECAP works directly from ligmol    
-        #     don't need to build canonical string
-#         ligSmilesC = obcM2C.WriteString(ligMol)
-#         # this returns both the canonSmiles string, but also PDBQT file name?!
-#         lsbits = ligSmilesC.split()
-#         canon = lsbits[0]
-        
-        # make copy in order to alter mol
-        amol = ob.OBMol(ligMol)
-        
-        currRecap = recap.Recap(amol,4)
-        for si,bondName in enumerate(currRecap.bondNames):
-            pat.Init(currRecap.smarts[bondName])
-            currRecap.apply(pat, si)
-        currRecap.decide_multiples()
-        currRecap.split()
-        
-        ligRecap = obcM2C.WriteString(amol,True)
-        # this returns both the canonSmiles string, but also PDBQT file name?!
-        lrbits = ligRecap.split()
-        recapStr = lrbits[0]
-        
-        fragments = recapStr.split('.')
-           
-        ###################################
-        
-        bindDict = mapLig2Features(ligIdx,fragments,ligMol)
-
-        ###################################
-        
-        # NB: augment bindDict with canon here vs. in mapLig2Features, 
-        # since obcM2C created here
-        
-        bindDict['canon'] = canon
-        
-        frag2check = range(bindDict['nfrag'])
-        badFragMap = [fi for fi in frag2check if bindDict[fi]['maps'] == None]
-        if len(badFragMap) >0:
-            ligCanon = bindDict['canon']
-            errMsg = '"%s" [ ' % bindDict['canon']
-            for fi in badFragMap:
-                errMsg += '(%d, "%s")' % (fi,bindDict[fi]['fragment'])
-            errMsg += ' ]'
-            errs.write('Missing maps: %s,%s,%s\n' % (exptName,zincid,errMsg))
-            npoor += 1
-        
-        ###################################
-        
-        fragAssmt = assignFrag(ligIdx,bindDict,errs)
-
-        ###################################
-        
-        totMiss = 0
-        missList = []
-        for f in fragAssmt:
-            totMiss += fragAssmt[f]['nmiss']
-            missList.append(fragAssmt[f]['nmiss'])
-            
-        if totMiss > MaxAtomMissThresh:
-            npoor += 1
-        else:
-            ngood += 1
-        
-        if verbose:
-            vpps = open(BindPPFile, 'a')
-            if totMiss > 0:
-                vpps.write('* %s NMiss=%d %s\n' % (zincid,totMiss,missList))
-            ppBindDict(zincid,bindDict,vpps)
-            vpps.close()
-
-        for fi,f in enumerate(fragAssmt):
-            outs.write('%s,%d,%s,"%s"\n' % (zincid,fi,fragAssmt[f]['fragment'],fragAssmt[f]['useMap']))
-
-            # NB: allow a single missing atom to slide!?
-            if fragAssmt[f]['nmiss'] <= MaxAtomMissThresh:
-                if fragAssmt[f]['nmiss'] > 0:
-                    nslide += 1
-                 
-                # NB: not using defaultdict, because l2fTbl needs to be serializable/pickled!
-                if zincid in l2fTbl:
-                    l2fTbl[zincid].append( fragAssmt[f].copy() )
-                else:
-                    l2fTbl[zincid] = [ fragAssmt[f].copy() ]
-            
-        if verbose and (iz % 1000 == 0):
-            print 'bldLig2Frag: nlig=%d nerr=%d npoor=%d' % (iz,nerr,npoor)
-                       
-    if verbose:
-        print 'bldLig2Frag: nlig=%d nerr=%d npoor=%d' % (iz,nerr,npoor)
-        
-    print 'bldLig2frag: NLig=%d NGood=%d NErr=%d NPoor=%d NSlide=%d' % \
-        (len(ligTbl),ngood,nerr,npoor,nslide)
-        
-    outs.close()
-    errs.close()
-    
-    return l2fTbl
-   
 def pybelBits2binary(fpbits):
     bitlist=list('0'*1024)
     for item in fpbits:
@@ -3771,6 +3775,26 @@ def loadLigPaths(inf):
         pathTbl[ entry['Ligand'] ] = entry['Path']
     print 'loadLigPaths: %d ligand paths loaded' % (len(pathTbl))
     return pathTbl
+
+def tstDockFile(ligTbl,exptName,verbose=False):
+    '''ala bldLig2frag(), but just make sure dockFile() works!
+    '''
+
+    nerr = 0
+    for iz,ligIdx in enumerate(ligTbl.keys()):
+                
+        e,batch = ligTbl[ligIdx]
+                
+        if config.RunName.startswith('focusedLib'):
+            ligand = ligIdx2zinc(ligIdx)
+            pdbqf = ProcDir + LigPathTbl[ligand]
+        else:
+            bno = int(batch)
+            pdbqf = dockFile(exptName,bno,ligIdx)
+        if pdbqf == None:
+            nerr += 1
+            
+    print 'tstDock: %s Nerr=%d/%d' % (exptName,nerr,len(ligTbl))
 
 ### top-level run commands
 if __name__ == '__main__':
