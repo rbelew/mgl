@@ -8,5 +8,3 @@ Starting with routines analyzing FAAH data:
 
 * "crawling" the processed files collecting basic summary statistics and receptor-ligand interaction data 
 
-* "counting" scripts that do a top-level census on interaction types
-
