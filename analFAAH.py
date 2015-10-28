@@ -2314,13 +2314,8 @@ def getAtoms(mol):
 
 def mapLig2Features(ligIdx,fragments,ligMol):
 
-    obcM2C = ob.OBConversion()
-    obcM2C.SetOutFormat('can')
-    obcM2C.SetOptions("-i", obcM2C.OUTOPTIONS) # produce smiles without isomeric or stereo information, TJO, 9 Apr 15
-
-    obcC2M = ob.OBConversion()
-    obcC2M.SetInAndOutFormats('can','mol')
-    obcC2M.SetOptions("-i", obcC2M.INOPTIONS) # produce smiles without isomeric or stereo information, TJO, 9 Apr 15
+    obc = ob.OBConversion()
+    obc.SetInFormat('smi')
                 
     latoms = getAtoms(ligMol)
     
@@ -2335,7 +2330,7 @@ def mapLig2Features(ligIdx,fragments,ligMol):
     for fi,frag in enumerate(fragments):
         fragMol = ob.OBMol()
 
-        obcC2M.ReadString(fragMol,frag)
+        obc.ReadString(fragMol,frag)
         
         ## TJO 151021
         fragMol.DeleteHydrogens()
@@ -2516,13 +2511,10 @@ def bldLig2frag(ligTbl,exptName,verbose=False):
         vpps = open(config.BindPPFile, 'w')
         vpps.close()
         
-    obcP2M = ob.OBConversion()
-    obcP2M.SetInAndOutFormats('pdbqt','mol')
+    obc = ob.OBConversion()
+    obc.SetInAndOutFormats('pdbqt','can')
+    obc.SetOptions("-i", obc.OUTOPTIONS) # produce smiles without isomeric or stereo information, TJO, 9 Apr 15
     
-    obcM2C = ob.OBConversion()
-    obcM2C.SetInAndOutFormats('mol','can')
-    obcM2C.SetOptions("-i", obcM2C.OUTOPTIONS) # produce smiles without isomeric or stereo information, TJO, 9 Apr 15
-   
     pat = ob.OBSmartsPattern();
    
     ngood=0
@@ -2552,20 +2544,13 @@ def bldLig2frag(ligTbl,exptName,verbose=False):
                 continue
         
         ligMol = ob.OBMol()
-        obcP2M.ReadFile(ligMol,pdbqf)
+        obc.ReadFile(ligMol,pdbqf)
         
-        ## 2do: need to convert ligMol to canonical smiles(with -i non-iso as above)
-        # so that conventions for aromaticity are consistently SMILES vs.
-        # smiles and pdbqt
-
-        # THEN convert to mol from this pdbqt->smiles->mol
-        # vs pdbqt -> mol
-
         # NB RECAP works directly from ligmol    
         # don't need to build canonical string
         # except to include it in bindDict
         
-        ligSmilesC = obcM2C.WriteString(ligMol)
+        ligSmilesC = obc.WriteString(ligMol)
         # this returns both the canonSmiles string, but also PDBQT file name?!
         lsbits = ligSmilesC.split()
         canon = lsbits[0]
@@ -2580,7 +2565,7 @@ def bldLig2frag(ligTbl,exptName,verbose=False):
         currRecap.decide_multiples()
         currRecap.split()
         
-        ligRecap = obcM2C.WriteString(amol,True)
+        ligRecap = obc.WriteString(amol,True)
         # this returns both the canonSmiles string, but also PDBQT file name?!
         lrbits = ligRecap.split()
         recapStr = lrbits[0]
@@ -2594,7 +2579,7 @@ def bldLig2frag(ligTbl,exptName,verbose=False):
         ###################################
         
         # NB: augment bindDict with canon here vs. in mapLig2Features, 
-        # since obcM2C created here
+        # since obc created here
         
         bindDict['canon'] = canon
         
