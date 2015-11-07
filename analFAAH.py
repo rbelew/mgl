@@ -2341,27 +2341,27 @@ def mapLig2Features(ligIdx,fragments,ligMol):
         bindDict[fi]['fragment'] = frag
         bindDict[fi]['fatoms'] = fatoms
     
-        fragQry = ob.CompileMoleculeQuery(fragMol)
-    
-        mapper = ob.OBIsomorphismMapper.GetInstance(fragQry)
-        
-        if fragQry and mapper:
-            isomorphs = ob.vvpairUIntUInt()
-            mapper.MapUnique(ligMol, isomorphs)
-            
-            # print 'NIso=%d' % (len(isomorphs))
-            if len(isomorphs)==0:
-                # print "No isomorphs?!",zincid,fi,frag
-                bindDict[fi]['maps'] = None
-            else:
-      
-                maps = list()
-                for ii,isomorph in enumerate(isomorphs):
-                    maps.append([(a,b) for (a,b) in isomorph])
-    
-                    # print fi,ii, maps
-                    
-                bindDict[fi]['maps'] = maps
+        # TJO 11/6/2015
+     '''new code block using smart pattern matching and mapping
+        intended to produce same data structures and mapping, but
+        with fewer (no!) missing mappings
+        '''
+    pat = ob.OBSmartsPattern()
+    if  pat.Init(frag) and pat.Match(ligMol):
+
+        #print 'NIso=%d' % (pat.NumMatches())
+        if pat.NumMatches() == 0:
+            # print "No isomorphs?!",zincid,fi,frag
+            bindDict[fi]['maps'] = None
+        else:
+
+            maps = list()
+            for p in pat.GetUMapList():
+                maps.append( [(a,b-1) for (a,b) in enumerate(p)] )
+
+            # print fi,ii, maps
+
+            bindDict[fi]['maps'] = maps
 
         else:
             zincid = ligIdx2zinc(ligIdx)
