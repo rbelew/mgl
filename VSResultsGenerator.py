@@ -78,9 +78,11 @@ class VSDockingResultsGenerator:
         self.DEBUG = debug
 
         if self.DEBUG:
-            #print "VSDockingResultsGenerator> init:", input_files, recname , receptor, doInteractions, debug, hbtol, water_map
-            if not hbtol == 0 :
-                print "DEBUG: extra hbtolerance:", hbtol
+            print "VSDockingResultsGenerator> init:", input_files, recname , receptor, doInteractions, debug, hbtol, water_map
+        # SF-DBG 
+#         if not hbtol == 0 :
+#             print "DEBUG: extra hbtolerance:", hbtol
+
         #print "VSDockingResultsGenerator> init:", input_files, recname , receptor, doInteractions, debug, hbtol, water_map
         
         HB_CUTOFF=3.21 + hbtol # X-Y hydrogen-bond distance cutoff -X-H...Y- # from AutoGrid 4.2 values
@@ -170,7 +172,7 @@ class VSDockingResultsGenerator:
         # initialize the bh_tree for the 
         # interactions calculated later
         try:
-            freeBHtree(self.receptor_bht)
+            freeBHtree(self.rec_bht)
         except:
             pass
         self.rec_bht           = bhtreelib.BHtree( self.receptor['coord'], None, 10)
@@ -196,7 +198,7 @@ class VSDockingResultsGenerator:
         """identifies HB donors and acceptors in a list of PDBQT atoms
            returns : acceptors[] and donors[] lists
         """
-        print "\n\nCALLEX"
+        # sf-DBG print "\n\nCALLEX"
         H_COV_BOND = 1.19 # value adapted for some distorted structures (ZINC21002974)
         H_COV_BOND  = H_COV_BOND ** 2  
         acceptor_types = ['OA', 'NA', 'SA']
@@ -206,7 +208,7 @@ class VSDockingResultsGenerator:
         h = []
         dcandidate = []
         for l in atom_list:
-            print "LATOM", l
+            # sf-DBG print "LATOM", l
             if l.startswith("ATOM") or l.startswith("HETATM"):
                 l = l.strip()
                 atype=l.split()[-1]
@@ -264,7 +266,7 @@ class VSDockingResultsGenerator:
         for r in xrange(len(self.results)):
             self.results[r]['metal'] = []
             # A. find ligand atoms close c.ontacts:
-            print "\nPROCESSING", self.results[r]
+            # sf-DBGDBG print "\nPROCESSING", self.results[r]
             self.xxx = self.results
             for i in xrange( len(self.results[r]["coord"])):
                 try:
@@ -294,7 +296,7 @@ class VSDockingResultsGenerator:
                             # metal detector
                             if self.receptor['atype'][rec_index] in self.metals:
                                 self.results[r]['metal'].append(rec_atom)      
-                print "VVVV", self.results[r]['vdw_contacts'] 
+                # sf-DBG print "VVVV", self.results[r]['vdw_contacts'] 
                 self.results[r]['vdw_contacts'] = list(set(  self.results[r]['vdw_contacts'] ))
                 del nb
 
@@ -732,9 +734,11 @@ class AutoDockVsResult(VSDockingResultsGenerator):
             #    self.processWaters()
 
     def checkPoses(self):
-        return
-        """ check that all poses are consistent """
-        print "CALLED"
+        # sf-DBG?
+#         return
+#         """ check that all poses are consistent """
+#         print "CALLED"
+        
         discard = []
         correct = len(self.poses[0]['coord'])
         correctFlex = len(self.poses[0]['flex_res'])
@@ -1208,27 +1212,59 @@ if __name__ == '__main__':
     ## after dns-scripts/generate_vs_results_VINA.py
     
     # defaults
-    DEBUG = True
+    DEBUG = False
     doInteractions = True
     rmsTol = 2.0
     mode = 1 # binding modes extracted from the result 
     header = "#name\tenergy\tligand_efficiency\ttotal_poses\treceptor\tfilename\n"
     suffix = "_Vina_VS"
     hbtol = 0.0
-    receptor = None
-
+    
     dir_root = '/Data/sharedData/coevol-HIV/WCG/DUDE/'
+    out_root = '/Data/sharedData/coevol-HIV/WCG/processed/DUDE_151107/'
+
+    DUDE_ReceptorTbl = {'ADA': dir_root+'ADA/x2E1Wdude.pdbqt',
+                        'HIVRT': dir_root+'HIVRT/x2ZD1_RT_NNRTI_NNRTInADJ--dudertnnrti.tar.gz',
+                        'HIVPR': dir_root+'HIVPR/x3KF0_prASw0c0.pdbqt',
+                        }
+
     
     recursive = True
     pattern = "*_out.pdbqt"
     input_files = pathToList(dir_root, recursive = recursive, pattern = pattern)
     
-    print 'VSResultsGenerator: NDock=%d' % (len(input_files))
+    print 'processing: NDock=%d' % (len(input_files))
 
     c = 0
+    prevProtein = None
     for l in input_files:
+        c+=1
+            
         try:
-            c+=1
+            path_root = os.path.dirname(l) 
+            if not path_root:
+                path_root = os.getcwd()
+            assert path_root.startswith(dir_root), 'processing: odd path_root?! %s without %s' % (path_root,dir_root)
+            # stem is everything beyond dir_root
+            stemPath = path_root[len(dir_root):]
+
+            bits = stemPath.split('/')
+            protein = bits[0]
+            
+            if protein != prevProtein:
+                
+                assert protein in DUDE_ReceptorTbl, 'processing: unknown receptor?! %s' % (protein)
+                receptorFile = DUDE_ReceptorTbl[protein]
+                r = os.path.basename(receptorFile)
+                recname = os.path.splitext(r)[0]
+                print 'processing: Updating current receptor for %s with %s %s' % (protein,recname,receptorFile)
+                try:
+                    receptor = getCoords(getLines(receptorFile))
+                except Exception, e:
+                    print "processing: Problem in getCoords() for receptor [%s]: (%s) " % (receptorFile, e)
+ 
+                prevProtein = protein
+            
             if DEBUG: print "processing", l
             lig =  AutoDockVinaVsResult(input_files = l, 
                     mode = mode,
@@ -1238,18 +1274,32 @@ if __name__ == '__main__':
                     doInteractions = doInteractions,
                     hbtol = hbtol)
             pdbqt = lig.generatePDBQTplus()
-            path_root = os.path.dirname(l) # the filename will be used to extract the root dir for the output file!
-            if not path_root:
-                path_root = os.getcwd()
-            output_filename = path_root+os.sep+lig.ligName+suffix+'.pdbqt' 
+            # NB: the filename will be used to extract the root dir for the output file
+            
+            # post to parallel PROCESSED directories vs. next to existing PDBQT
+            if not os.path.isdir(out_root+stemPath):
+                os.makedirs(out_root+stemPath)        
+            output_filename = out_root+stemPath+os.sep+lig.ligName+suffix+'.pdbqt' 
             fp = open(output_filename, 'w')
             fp.write(pdbqt)
             fp.close()
+                
+            try:
+                bht = lig.rec_bht
+                freeBHtree(bht)
+            except Exception,e:
+                print 'processing: cant free bht?',e
+                     
 
         except:
             print "ERROR: problems processing input :"
             print "file :", l
             print "error:", exc_info()[1]
+            
+        # if c % 100 == 0: print c
+        
+        print 'ligandNo=',c
+            
 
 
 
