@@ -26,6 +26,7 @@ import scipy.spatial.distance as distance
 from scipy.sparse.dok import dok_matrix
  
 import matplotlib
+from __builtin__ import False
 matplotlib.use('Agg') # ASSUME no windowing
 # Although many examples use pylab, it is no longer recommended.                                                         
 # import pylab as p
@@ -111,33 +112,6 @@ def basicStats(l):
     stdev = math.sqrt(sumDiffSq) / float(len(l))
     return (avg,stdev)
 
-def clean_axis(ax):
-    """Remove ticks, tick labels, and frame from axis"""
-    ax.get_xaxis().set_ticks([])
-    ax.get_yaxis().set_ticks([])
-    for sp in ax.spines.values():
-        sp.set_visible(False)
-
-def frange(x, y, jump):
-    while x < y:
-        yield x
-        x += jump
-
-def entropy(dist):
-    'compute (log2 ==> bits) entropy over distribution'
-
-    h = 0.
-    tot = sum(dist)
-    if tot == 0:
-        return h
-    
-    for n in dist:
-        if n > 0:
-            nf = float(n)
-            p = nf/tot
-            h -= p * math.log(p,2)
-    return h
-
 def entropy2(ix,iy):
     x = float(ix)
     y = float(iy)
@@ -163,27 +137,11 @@ def infoGain(tp,fp,tn,fn):
     
     return (ig,prob,pos,neg)
 
-def bldRanges(l):
-    "Identify contiguous ranges of integers; tuples iff more than one element in range"
-    ll = l[:]  # don't want to apply in-place sort to list passed in!
-    ll.sort()
-    rangeList = []
-    prev = 0
-    begr = 0
-    for bk in ll:
-        if bk != prev+1:
-            if prev != 0:
-                if begr==prev:
-                    rangeList.append( begr )
-                else:
-                    rangeList.append( (begr,prev) )
-            begr = bk
-        prev = bk
-    if begr==prev:
-        rangeList.append( begr )
-    else:
-        rangeList.append( (begr,prev) )
-    return rangeList
+def rndEstr(e,ndig=0):
+    "round to nearest integral +ndig kcal"
+    fstr = '{0:0%d.%df}' % (ndig+4,ndig) # so two-digit energies sort correctly as strings!
+    rstr = fstr.format(e)
+    return rstr
 
 def ranges2list(rangeList):
     'invert bldRanges()'
@@ -194,26 +152,6 @@ def ranges2list(rangeList):
         else:
             l += range(e[0],e[1]+1)
     return l
-
-def rndEstr(e,ndig=0):
-    "round to nearest integral +ndig kcal"
-    fstr = '{0:0%d.%df}' % (ndig+4,ndig) # so two-digit energies sort correctly as strings!
-    rstr = fstr.format(e)
-    return rstr
-
-def findex(frange,val):
-    eps = 1e-6
-    for i,v in enumerate(frange):
-        if abs(frange[i]-val) < eps:
-            return i 
-    return -1
-        
-
-def avgTbl(tbl):
-    'return average value over tables entries'
-
-    avg =  float( sum(  [ tbl[e] for e  in tbl.keys() ] )) / len(tbl)
-    return avg
 
 def touchTimeDiff(f1,f2):
     '''given two files (earlyFile, lateFile), return seconds between their touch times
@@ -347,8 +285,8 @@ def analFAAH_expt(exptTbl,exptList,faahDirParent,outDir,frac4Thresh=0.02,ncand=1
         first pass sorts all energies, identifies threshold, 
         outputs best ncand  candidates ACROSS ALL EXPERIMENTS to best_*.csv
         two thresholds computed: threshold=thresh@frac4Thresh; bestCandThresh=thresh@ncand
+        computes, saves NonZincLigTbl
         NB: exptTbl augmented with threshold!
-        built from analFAAH, but for only focal experiments
     '''
                 
     ## Process experiments in exptList
@@ -490,10 +428,8 @@ def analFAAH_expt(exptTbl,exptList,faahDirParent,outDir,frac4Thresh=0.02,ncand=1
 
                 ligIdx = normLigand(ligand)
                 
-                if config.RunName.startswith('DUDE'):
-                    ligand2 = ligIdx2zinc(ligIdx)
-                else:
-                    ligand2 = ligIdx2zinc(ligIdx)
+                ligand2 = ligIdx2zinc(ligIdx)
+                
                 if ligand2 != ligand:
                     # NB: two ligand cleanups!
                     if not (ligand.endswith('.VS') or ligand.find('pras') != -1):
@@ -506,8 +442,8 @@ def analFAAH_expt(exptTbl,exptList,faahDirParent,outDir,frac4Thresh=0.02,ncand=1
                     ligTbl[ligIdx] = 1
     
                 ## thresh
-                
-                if dval < thresh:
+                # NB: thresh set EQUAL to highest energy in getThresh()
+                if dval <= thresh:
                     nlowE += 1
                     ## NB: all 3 vals (e,eff,dval) written to lowE file; why not!
                     newline = '%d,%s,%s,%s,%s,%s,%s\n' % (batchNo,ligand,e,eff,dval,nvdv,ninter)      
@@ -554,37 +490,6 @@ def analFAAH_expt(exptTbl,exptList,faahDirParent,outDir,frac4Thresh=0.02,ncand=1
     cands.close()
     return newExptTbl
 
-def getEvalLigands(inf,keyfld='PrTrue'): 
-    'create ligand list from ligPredict.csv sorted by descending PrTrue'
-    
-    reader = csv.DictReader(open(inf))        
-    ligTbl = {}
-    for i,entry in enumerate(reader):
-        # Ligand,Actual,Predict,PrTrue,Err,E,FPRate,TPRate
-        ligTbl[entry['Ligand']] = float(entry[keyfld])
-        
-    ligands = ligTbl.keys()
-    ligands.sort(key=lambda k: ligTbl[k], reverse= True)
-    return ligands
-
-def getClassifLigands(inf,keyfld='PrTrue'): 
-    '''create (ligand,active,classLbl,errp) list from ligPredict.csv sorted by descending PrTrue
-    for use by evalClassif.getCommonClassifLig()
-    '''
-    
-    reader = csv.DictReader(open(inf))        
-    ligTbl = {}
-    for i,entry in enumerate(reader):
-        # Ligand,Actual,Predict,PrTrue,Err,E,FPRate,TPRate
-        ligTbl[entry['Ligand']] = (float(entry[keyfld]),entry['Actual'],entry['Predict'],entry['Err'])
-        
-    ligands = ligTbl.keys()
-    ligands.sort(key=lambda k: ligTbl[k][0], reverse= True)
-    
-    ligList = []
-    for lig in ligands:
-        ligList.append( (lig,ligTbl[lig][1],ligTbl[lig][2],ligTbl[lig][3]) )
-    return ligList
 
 def getThresh(exptKey,sys,batchList,faahDir,frac4Thresh,ncand,dcrit):
 
@@ -681,6 +586,7 @@ def getThresh(exptKey,sys,batchList,faahDir,frac4Thresh,ncand,dcrit):
     # ASSUME all algorithms require n log n??
     allE.sort()
     if frac4Thresh==1.0:
+        # NB: thresh set to EQUAL highest energy found
         thresh = allE[-1]
     else:
         threshIdx = int(round(float(len(allE) * frac4Thresh)))
@@ -794,7 +700,7 @@ def getInterDetails(itype,iinfo):
         
     return (rchain,raa,ratom,liname)
 
-def bldFocalInterTbl(faahDir,batch2ligTbl,activeLig=None):
+def bldFocalInterTbl(faahDir,batch2ligTbl):
     '''retrieval of interaction data for just focal ligands (collected by batch)
         NB: Exp47_LigandName_Hack removed
     '''
@@ -806,6 +712,7 @@ def bldFocalInterTbl(faahDir,batch2ligTbl,activeLig=None):
     nrcd = 0
     nmissf = 0
     nactive = 0
+    nVDWonly = 0
     
     for ib,bno in enumerate(batch2ligTbl.keys()):
         
@@ -814,7 +721,7 @@ def bldFocalInterTbl(faahDir,batch2ligTbl,activeLig=None):
             inf = faahDir + 'ADV_inter_0000001.json' 
                            
         else:
-            inf = faahDir+('inter/%s_inter_%07d.json' % (RunType,int(bno)))
+            inf = faahDir+('inter/%s_inter_%07d.json' % (config.RunType,int(bno)))
             
         try:
             inStr = open(inf)
@@ -839,23 +746,22 @@ def bldFocalInterTbl(faahDir,batch2ligTbl,activeLig=None):
                 config.RunName.startswith('focusedLib'):
                 (recept,ligand,interList) = interInfo
                 expt = config.RunName
-                ligIdx = normLigand(ligand)
             else:
                 (expt,batchNo,recept,ligand, interList) = interInfo
             
-                ligIdx = normLigand(ligand)                    
-                if ligIdx not in focalLigTbl:
-                    continue
+            ligIdx = normLigand(ligand)   
+                                 
+            if ligIdx not in focalLigTbl:
+                continue
 
-            if activeLig != None:
-                if ligIdx in activeLig:
-                    nactive += 1
-                            
             # don't check for SAMPL, as they use bldInterTbl_csv()
 
+            nonVDWfnd = False
             for interTypeList in interList:
                 itypeIdx, interEnum = interTypeList
                 itype = InterTypes[itypeIdx]
+                if itype != 'vdw':
+                    nonVDWfnd = True
                 for iinfo in interEnum:
                     (rchain,raa,ratom,liname) = getInterDetails(itype,iinfo)
                             
@@ -863,14 +769,10 @@ def bldFocalInterTbl(faahDir,batch2ligTbl,activeLig=None):
                     lk = liname
         
                     receptInterTbl[k][itype][lk].append( ligIdx )
-                    
-#                     if ligIdx<0 and itype != 'vdw':
-#                         print '1,%s,%s,%s,%s,%s' % (k,itype,lk,ligand,ligIdx)
+            if not nonVDWfnd:
+                nVDWonly += 1
 
-    if activeLig != None:
-        print 'bldFocalInterTbl: NActive=%d' % (nactive)
-                 
-    print 'bldFocalInterTbl: NRcd=%d N(Chain+RAA+RAtom)=%d NMissFile=%d' % (nrcd,len(receptInterTbl),nmissf)
+    print 'bldFocalInterTbl: NRcd=%d NVDWOnly=%d N(Chain+RAA+RAtom)=%d NMissFile=%d' % (nrcd,nVDWonly,len(receptInterTbl),nmissf)
 
     ## NB: need to make serializable, for pickel!
     
@@ -927,9 +829,9 @@ def analBldHIFeatures(faahDir,exptName,bnoList,thresh,featFile):
     for ib,bno in enumerate(bnoList):
         
         if SAMPL_expt:
-            inf = faahDir+('summ/%s_summ_%05d.csv' % (RunType,bno))
+            inf = faahDir+('summ/%s_summ_%05d.csv' % (config.RunType,bno))
         else:
-            inf = faahDir+('summ/%s_summ_%07d.csv' % (RunType,bno))
+            inf = faahDir+('summ/%s_summ_%07d.csv' % (config.RunType,bno))
 
         try:
             inStr = open(inf)
@@ -961,7 +863,7 @@ def analBldHIFeatures(faahDir,exptName,bnoList,thresh,featFile):
                 
                 
             # Exp47!
-            if Exp47_LigandName_Hack:
+            if config.Exp47_LigandName_Hack:
                 ligBits = ligand.split('_')
                 if ligBits[0].startswith('ZINC'):
                     ligand = ligBits[0]
@@ -1085,77 +987,13 @@ def analBldHIFeatures(faahDir,exptName,bnoList,thresh,featFile):
     outs.close()
     print "analBldHIFeatures: %s NBadEntropy=%d" % (exptName,nbadEntropy)
 
-def norm3AA(aa3s):
-    # normalize RAA: convert 3char AA to one char; use %03d for pos
-    aa3 = aa3s[:3]
-    if aa3 in AADict:
-        aa1 = AADict[aa3]
-    else:
-        aa1 = 'X'
-    try:
-        iapos = int(aa3s[3:])
-        if iapos >= 1000:
-            iapos = 999
-    except:
-        iapos = 999
-    aas = '%s%03d' % (aa1,iapos)
-    return aas
-
 def bldExptStr(exptKey):
     s = '_'.join(exptKey)
     return s 
 
-def analAll_(exptTbl,faahDirParent,outDir,analFn,paramTbl):
-    '''generic function iterating any analFn over all experiment batches
-        paramTbl includes all cross-experiment constant params,
-        augments these with all params named by exptFile column headers
-    '''
-    
-    # 2do HACK:  back-fitting SAMPLE directory structure
-    if faahDirParent.find('sampl') != -1:
-        SAMPL_expt = True
-    else:
-        SAMPL_expt = False
-
-    if 'exptSubset' in paramTbl:
-        exptList = paramTbl['exptSubset']
-    else:
-        exptList = None
-        
-    allExpt = exptTbl.keys()
-    allExpt.sort()
-    for exptKey in allExpt:
-        exptNo,prot,recept,site,lib = exptKey
-
-        if exptList and not (('Exp'+exptNo) in exptList):
-            print 'analAll_: skipping',exptKey
-            continue
-        
-        if SAMPL_expt:
-            faahDir = faahDirParent
-        else:
-            faahDir = faahDirParent + 'Exp%s/' % (exptNo)
-
-        exptStr = bldExptStr(exptKey)
-
-        exptData = exptTbl[exptKey]
-        exptData.update(paramTbl)
-
-        if 'thresh' in exptData:
-            thresh = exptData['thresh']
-        elif paramTbl['needThresh']:
-            print 'analAll_: no thresh?!',exptStr
-            continue
-
-        batchList = ranges2list( [(exptData['bstart'],exptData['bend'])] )
-        
-        print 'analAll_: analyzing features %s %d batches "%s"' % \
-            (exptStr,len(batchList),exptTbl[exptKey])
-        
-        analFn(faahDir,outDir,exptStr,batchList,exptData)
-         
 def analBestRLIF(exptTbl,faahDirParent,outDir,nbest=None,exptList=None):
-    'Accumulate RLIF frequency stats for best ligands'
+    '''Accumulate RLIF frequency stats for best ligands
+    '''
 
     allExpt = exptTbl.keys()
     allExpt.sort()
@@ -1174,61 +1012,32 @@ def analBestRLIF(exptTbl,faahDirParent,outDir,nbest=None,exptList=None):
 
         exptData = exptTbl[exptKey]
         exptName = bldExptStr(exptKey)
-
-        config.NonZincLigTbl = {}
-        config.NZIdx2LigTbl = {}
-        config.NNonZincLig = 0
                                 
         lowef = LowEDir+ exptName + '_lowE.csv'
 
 #        nactive = 0
 
         if nbest==None:
-            ligTbl, batch2ligTbl = loadBestLig(lowef)
+            ligTbl, batch2ligTbl = loadBestLig(exptName,lowef)
         else:
-            ligTbl, batch2ligTbl = loadBestLig(lowef,maxLig=nbest)         
+            ligTbl, batch2ligTbl = loadBestLig(exptName,lowef,maxLig=nbest)         
 
         itpklf = InterTblDir + '%s_interTbl.pkl' % (exptName)
         if os.path.isfile(itpklf):
             print 'analBestRLIF: interTbl exists, loading',itpklf
             interTbl = cPickle.load(open(itpklf,'rb'))
             
-            nonzf = LowEDir + '%s_nonZincLig.csv' % (exptName)
-            if os.path.exists(nonzf):
-                reader = csv.DictReader(open(nonzf))
-                for i,entry in enumerate(reader):
-                    # Ligand,NZIdx
-                    config.NonZincLigTbl[ entry['Ligand'] ] = int(entry['NZIdx'])
-                    config.NZIdx2LigTbl [ int(entry['NZIdx']) ] =  entry['Ligand']
-                config.NNonZincLig = len(config.NonZincLigTbl)
-                print 'analBestRLIF: %d NonZincLig loaded from %s' % (config.NNonZincLig,nonzf)
-            else:
-                print 'analBestRLIF: no NonZincLig',exptName
-
         else:
             print 'analBestRLIF: interTbl does not exist, building',itpklf
             
 #            interTbl = bldFocalInterTbl(faahDir,batch2ligTbl,activeLig)
             interTbl = bldFocalInterTbl(faahDir,batch2ligTbl)
             cPickle.dump(interTbl, open(itpklf,'wb'))
-            
-#             if NNonZincLig>0:
-#                 # cf. bldNonZincIdx()
-#                 nzligFile = LowEDir + '%s_nonZincLig.csv' % (exptName)
-#                 print 'analBestRLIF: Writing %d NonZinc ligands to ' % (NNonZincLig,nzligFile)
-#                 allLig = NonZincLigTbl.keys()
-#                 allLig.sort()
-#                 outs = open(nzligFile,'w')
-#                 outs.write('Ligand,NZIdx\n')
-#                 for lig in allLig:
-#                     outs.write('%s,%d\n' % (lig,NonZincLigTbl[lig]))
-#                 outs.close()
-                
+                            
         # receptInterTbl[k][itype][lk].append( zincIdx )
         # (rchain,raa,ratom) -> {itype - > {liname -> [ ligID ] } }
         
         rlifTbl = defaultdict(int) # RLIF -> freq
-
         for rfeat,ligTbl in interTbl.items():            
             # (rchain,raa,ratom) -> {itype - > {latom -> [ ligID ] } }
             (rchain,raa,ratom) = rfeat
@@ -1244,20 +1053,82 @@ def analBestRLIF(exptTbl,faahDirParent,outDir,nbest=None,exptList=None):
         allRLIF = rlifTbl.keys()
         allRLIF.sort(key= lambda f: rlifTbl[f],reverse=True)
         
+        itypeFreqTbl = defaultdict(int)
+        itypeCummTbl = defaultdict(int)
+        
         outf = RLIFDir + ('%s_rlif.csv' % exptName)
         outs = open(outf,'w')
         outs.write('RLIF,Freq\n')
         for f in allRLIF:
+            fbits = feature2bits(f) # [chain,Rpos,RAA,Ratom,IType,Latom]
+            itype = fbits[4]
+            itypeFreqTbl[itype] += 1
+            itypeCummTbl[itype] += rlifTbl[f]
             outs.write('%s,%d\n' % (f,rlifTbl[f]))
         outs.close()
+        
+        cntStr = ''
+        for itype in InterTypes:
+            if itype in itypeFreqTbl:
+                cntStr += ' %s=%d/%d' % (itype,itypeFreqTbl[itype],itypeCummTbl[itype])
+            else:
+                cntStr += ' %s=0/0' % (itype)
+        print 'analBestRLIF: IType Distrib:',cntStr   
 
-def loadBestLig(lowef,maxLig=-1,normalizeLigand=True):
+def feature2bits(f):
+    'return [chain,Rpos,RAA,Ratom,IType,Latom];  AApos is int'
+    bits = f.split('_')
+    aa = bits[1]
+    aapos = int(aa[:-1]) # drop 1-character residue
+    aar = aa[-1]
+    bits[1] = aapos
+    bits.insert(2,aar)
+    return bits
+ 
+def loadSAMPLTrueTbl(inf):
+    print 'loadSAMPLTrueTbl: loading',inf
+    trueLigTbl = {} # ligIdx -> ligand name
+    inStr = open(inf)
+    for il,line in enumerate(inStr.readlines()):
+        # AVX40944     AVX40944_0   C[N@@H+](CC1=CC=CC=C1)CC2=C(C(=C(C=C2)OC)CCC3=CC=CC(=C3)C(=O)[O-])C(=O)[O-]
+        flds = line.split(' ')
+        flds = [f for f in flds if f != ''] 
+        ligand = flds[1]
+        ligIdx = normLigand(ligand)
+        trueLigTbl[ligIdx] = ligand
+    inStr.close()
+    print 'loadSAMPLTrueTbl: done. NTrueLig=%d' % len(trueLigTbl)
+    return trueLigTbl # ligIdx -> ligand name
+
+def loadBestLig(exptName,lowef,maxLig=-1,normalizeLigand=True):
     '''read energy, batch from lowef
     return ligTbl: ligIdx -> [e,batch] and batch2ligTbl: batch -> [ligs in batch]
     if maxLig != -1, only maxLig lowest energy ligands included
     150629: normLigand() applied
+    151028: preload NonZincLigTbl, ligTbl assumes it
     '''
 
+    if normalizeLigand:
+        config.NonZincLigTbl = {} # ligand name -> nonzincID 
+        config.NZIdx2LigTbl = {} # nonzincID -> ligand name
+        config.NNonZincLig = 0
+        if config.RunName.startswith('DUDE'):
+            nonzf = LowEDir + '%s_nonZincLig.csv' % (exptName)
+        else:
+            nonzf = LowEDir + 'nonZincLig.csv'
+
+        if os.path.exists(nonzf):
+            # cf. analFAAH_expt()
+            reader = csv.DictReader(open(nonzf))
+            for i,entry in enumerate(reader):
+                # Ligand,NZIdx
+                config.NonZincLigTbl[ entry['Ligand'] ] = int(entry['NZIdx'])
+                config.NZIdx2LigTbl [ int(entry['NZIdx']) ] =  entry['Ligand']
+            config.NNonZincLig = len(config.NonZincLigTbl)
+            print 'loadBestLig: %d NonZincLig loaded from %s' % (config.NNonZincLig,nonzf)
+        else:
+            print 'loadBestLig: no NonZincLig',exptName
+        
     ligTbl = {} # lig -> [e,batch]                                                                                              
     batch2ligTbl = defaultdict(list) # batch -> [lig]                                                                       
 
@@ -1291,7 +1162,7 @@ def loadBestLig(lowef,maxLig=-1,normalizeLigand=True):
 
     for lig in ligTbl:
         batch2ligTbl[ ligTbl[lig][1] ].append(lig)
-
+            
     return ligTbl, batch2ligTbl
   
 AARE = '([A-Z]+)([0-9]+)'
@@ -1337,23 +1208,23 @@ def bldFeaturePrefix(chain,raa):
     return prefix
     
 def bldFeature2(chain,raa,ratom,itype,ligatom):
-    '''create features based on binary/wvdw, posOnly/not GLOBAL variables
+    '''create features based on binary/wvdw, posOnly/not config variables
        NB: may return "", eg, if binary and itype is vdw
        NB: unicode (from interact JSON) converted to str()
     '''
 
     f = ''
     
-    if ADFeatures=='binary' and itype == 'vdw':
+    if config.ADFeatures=='binary' and itype == 'vdw':
         return ''
 
     prefix = bldFeaturePrefix(str(chain),str(raa))
 
-    if HIFLevel == 'PosOnlyHIF':          
+    if config.HIFLevel == 'PosOnlyHIF':          
         f = prefix
-    elif HIFLevel == 'TypedPosHIF':
+    elif config.HIFLevel == 'TypedPosHIF':
         f = prefix + '_' + str(itype)
-    elif HIFLevel == 'ROnlyHIF':
+    elif config.HIFLevel == 'ROnlyHIF':
         f = prefix + ('_'.join(['',str(ratom),str(itype)]) )
     else: # HIFLevel == 'Full':
         # 150929: drop ligand atom index
@@ -1365,83 +1236,7 @@ def bldFeature2(chain,raa,ratom,itype,ligatom):
 
     return f
 
-def feature2bits(f):
-    'return [chain,Rpos,RAA,Ratom,IType,Latom];  AApos is int'
-    bits = f.split('_')
-    aa = bits[1]
-    aapos = int(aa[:-1]) # drop 1-character residue
-    aar = aa[-1]
-    bits[1] = aapos
-    bits.insert(2,aar)
-    return bits
-   
-def loadSAMPLTrueTbl(inf):
-    print 'loadSAMPLTrueTbl: loading',inf
-    trueLigTbl = {} # ligIdx -> ligand name
-    inStr = open(inf)
-    for il,line in enumerate(inStr.readlines()):
-        # AVX40944     AVX40944_0   C[N@@H+](CC1=CC=CC=C1)CC2=C(C(=C(C=C2)OC)CCC3=CC=CC(=C3)C(=O)[O-])C(=O)[O-]
-        flds = line.split(' ')
-        flds = [f for f in flds if f != ''] 
-        ligand = flds[1]
-        ligIdx = normLigand(ligand)
-        trueLigTbl[ligIdx] = ligand
-    inStr.close()
-    print 'loadSAMPLTrueTbl: done. NTrueLig=%d' % len(trueLigTbl)
-    return trueLigTbl # ligIdx -> ligand name
-
-def analSAMPLTrueEnergy(faahDir,outDir,exptName,bnoList,paramTbl):    
-    '''analyze SAMPL low energies with benefit of TRUE docking data
-       analAll_() complient'''
-
-    runType = paramTbl['runType']
-    edecimal = paramTbl['edecimal']
-    trueLigTbl = paramTbl['trueLigTbl']
-    
-    posEVec = []
-    negEVec = []
-    posEDistTbl = {}
-    negEDistTbl = {}
-    for ib,bno in enumerate(bnoList):
-        inf = faahDir+'summ/%s_summ_%05d.csv' % (runType,bno)
-        inStr = open(inf)
-        
-        for il,line in enumerate(inStr.readlines()):
-            if il == 0:
-                continue
-            flds =line[:-1].split(',')
-            # Expt,Recept,Ligand,E,Eff,Nvdw,Ninter
-            (expt,recept,ligand,e,eff,nvdw,ninter) = flds
-               
-            e = float(e)         
-            if abs(e) > TooBigE:
-                # print 'analFAAH: odd energy?!',isf,summF,il,e
-                continue
-
-            rEstr = rndEstr(e,edecimal)
-            
-            if ligand in trueLigTbl:
-                posEVec.append(e)
-                if rEstr in posEDistTbl:
-                    posEDistTbl[rEstr] += 1
-                else:
-                    posEDistTbl[rEstr] = 1         
-            else:
-                negEVec.append(e)
-                if rEstr in negEDistTbl:
-                    negEDistTbl[rEstr] += 1
-                else:
-                    negEDistTbl[rEstr] = 1
-                    
-        inStr.close()
-
-    posAvg,posSD = basicStats(posEVec)
-    negAvg,negSD = basicStats(negEVec)
-    print "analSAMPLTrue: %s PosAvg=%f PosSD=%f NegAvg=%f NegSD=%f" % (exptName,posAvg,posSD,negAvg,negSD)
-            
-    plot.plot2ExptE(exptName,posEDistTbl,negEDistTbl,edecimal)
-
-def analTrueEnergy(faahDir,outDir,exptName,ligTbl,activeIdxSet):    
+def analTrueEnergy(faahDir,exptName,ligTbl,activeIdxSet):    
     '''analyze low energies with benefit of knowledge of activeIdxSet
     NB: dropped edecimal rounding?'''
     
@@ -1474,192 +1269,13 @@ def analTrueEnergy(faahDir,outDir,exptName,ligTbl,activeIdxSet):
     cummTrueMaxE, fracNegDropped = plot.plot2ExptE(exptName,posEDistTbl,negEDistTbl)
     return cummTrueMaxE, fracNegDropped
 
-def ligHIF2arff(faahDir,summDir,exptName,bnoList,paramTbl):
-    '''create ARFF encoding of expt's ligands wrt/ HIF
-       analAll_() complient
-    '''
-
-    runType = paramTbl['runType']
-    trueLigTbl = paramTbl['trueLigTbl']
-    featureSetName = paramTbl['featureSetName']
-    infoThresh = paramTbl['infoThresh']
-    # hifEncoder = paramTbl['hifEncoder']
-
-    # 2do HACK:  back-fitting SAMPLE directory structure
-    if faahDir.find('sampl') != -1:
-        print 'ligHIF2arff: SAMPL_expt not supported(:'
-        return None
-        # SAMPL_expt = True
-    else:
-        SAMPL_expt = False
-
-    outs = open(summDir+('arff/%s_%s.arff' % (exptName,featureSetName)),'w')
-    
-    ## get this experiment's HIF
-    featureFile = HIFDir+('%s.csv' % exptName)
-    hifTbl = {}
-    reader = csv.DictReader(open(featureFile))
-    # F,Pr,Info,PosEnt,NegEnt
-    for i,entry in enumerate(reader):
-        info = float(entry['Info'])
-        if info > infoThresh:              
-            hif = entry['F']
-            hifTbl[hif] = info  
-    
-    print 'ligHIF2arff: NHIF=%d' % (len(hifTbl))
-    # get ligands' energies
-    ligETbl = {}
-    for ib,bno in enumerate(bnoList):
-        if SAMPL_expt:
-            inf = faahDir+('summ/%s_summ_%05d.csv' % (runType,bno))
-        else:
-            inf = faahDir+('summ/%s_summ_%07d.csv' % (runType,bno))
-
-        inStr = open(inf)
-        
-        for il,line in enumerate(inStr.readlines()):
-            if il == 0:
-                continue
-            flds =line[:-1].split(',')
-            if SAMPL_expt:
-                (expt,recept,ligand,e,eff,nvdw,ninter) = flds
-            else:
-                # Expt,Batch,Recept,Ligand,E,Eff,Nvdw,Ninter
-                (expt,batch,recept,ligand,e,eff,nvdw,ninter) = flds
-               
-            e = float(e)         
-            if abs(e) <= TooBigE:
-                ligETbl[ligand] = e             
-        inStr.close()
-
-    outs.write('@relation %s_%s\n' % (featureSetName,exptName))
-    outs.write('@attribute e numeric\n')
-    allHIF = hifTbl.keys()
-    allHIF.sort()
-    for hif in allHIF:
-        outs.write('@attribute %s {True, False}\n' % hif)
-    outs.write('@attribute class {True, False}\n')
-    outs.write('@data\n')
-    
-    nrcd = 0
-    for ib,bno in enumerate(bnoList):
-        if not SAMPL_expt:
-            inf = faahDir+('inter/%s_inter_%05d.json' % (runType,bno))
-            
-#         else:
-#             inf = faahDir+('inter/%s_inter_%07d.json' % (runType,bno))
-
-        try:
-            inStr = open(inf)
-            allInter = json.load(inStr)
-            inStr.close()
-        except Exception, e:
-            print 'ligHIF2arff: bad inter JSON?!',exptName,bno,e
-            continue
-
-        currLigand = ''
-        ligHIFTbl = {}
-
-        for il,interInfo in allInter:
-            nrcd += 1
-            flds =line[:-1].split(',')
-            
-            # cf crawl_ADV.rptData_ADV()
-            # [ [Expt,BatchNo,Recept,Lig, [IType,[InterEnum] ] ] ]
-            (expt,recept,ligand, interList) = interInfo
-            for interTypeList in interList:
-                itypeIdx, interEnum = interTypeList
-                itype = InterTypes[itypeIdx]
-                for iinfo in interEnum:
-                    (rchain,raa,ratom,liname) = getInterDetails(itype,iinfo)
-
-            assert False, '2do: update ligLib2arff for new bldFeature2()'
-            # need to pass adFeatures,posOnly into LigLib2arff
-            # was: hif = bldFeature(rchain,raa,ratom,itype)
-            # now: hif = bldFeature2(chain,raa,ratom,itype,ligatom,adFeatures,posOnlyHIF)
-                    
-            
-            assert expt!='Exp47', 'bldInterTbl: retest Exp47_LigandName_Hack!'
-#             if Exp47_LigandName_Hack:
-#                 ligBits = ligand.split('_')
-#                 if ligBits[0].startswith('ZINC'):
-#                     ligand = ligBits[0]
-#                 else:
-#                     ligand = ligBits[1]
-
-            if il==1:
-                currLigand = ligand
-
-            ligHIFTbl[hif] = True
-        
-        # ligStr = '%s,' % ligand
-        ligStr = '%f,' % ligETbl[ligand]
-        for hif in allHIF:
-            ligStr += '%s,' % (hif in ligHIFTbl)
-        pos = currLigand in trueLigTbl
-        ligStr += '%s\n' % (pos)
-        outs.write(ligStr)
-            
-    outs.close()
-
-
-def loadFragClusters_v2(fragClustf): 
-    '''load fragClustTbl: rlif -> frag -> centroid-frag
-    HACK: 2 pass: first identify fragCenters, then map all others in clique to it
-    '''
-
-    frag2CtrTbl = {} # rlif -> frag -> fragCtr
-
-    # pass1
-    allCliques = {} # rlif -> cliqCtr
-    cliqCtr = {} # cliqID -> fragCtr
-    allFragC = []
-    prevRLIF = None
-    reader = csv.DictReader(open(fragClustf))
-    for i,entry in enumerate(reader):
-        # RLIF,CliqIdx,IsCtr,Frag
-        rlif = entry['RLIF']
-        cidx = entry['CliqIdx']
-        ctr = entry['IsCenter']
-        frag = entry['Frag']
-        if rlif==prevRLIF:
-            if ctr=='1':
-                allFragC.append(frag)
-                cliqCtr[cidx] = frag
-        else:
-            allCliques[prevRLIF] = (cliqCtr,allFragC)
-            cliqCtr = {} # cliqID -> fragCtr
-            allFragC = []
-            prevRLIF = rlif
-    allCliques[prevRLIF] = (cliqCtr,allFragC)   
-         
-    print 'loadFragClusters: NFragC=%d' % (len(allFragC))
-    
-    # pass2            
-    frag2CtrTbl = defaultdict(dict) # rlif -> frag -> fragCtr
-    reader = csv.DictReader(open(fragClustf))
-    for i,entry in enumerate(reader):
-        # Clique,IsCenter,Fragment
-        rlif = entry['RLIF']
-        cidx = entry['CliqIdx']
-        frag = entry['Frag']
-        frag2CtrTbl[rlif][frag] = cliqCtr[cidx]
-            
-    return frag2CtrTbl
-    
-def ligRFC2arff(exptName,activeIdxSet,ethresh=None):
-    '''create ARFF encoding of expt's ligands wrt/ RLIF+CentroidFrag qualification
+def lig2SpArff(exptName,ligTbl,origFragClustTbl,ligCoordTbl,activeIdxSet,ethresh=None):
+    '''create ARFF encoding of expt's ligCoordTbl a wrt/ RLIF+CentroidFrag qualification
     ASSUME ligCoord already built, loaded from ligCoord.pkl
     use fragClustf to collapse fragments to cluster center
-    rlifPartition==True when fragments have been clustered wrt/ RLIF
     output ARFF includes ligand names; filtered by weka
     '''
 
-    R2FCPickleFile = R2FCDir + exptName + '_r2fc.pkl'
-    print 'Loading r2fcPickle...',
-    origFragClustTbl = cPickle.load(open(R2FCPickleFile,'rb'))
-    # rlif -> cliqueIdx -> (ctrFrag, [cliqueFrags] )
-    print 'done.'
     
     # Build rlif -> frag -> fragCtr
     fragClustTbl = {}
@@ -1669,18 +1285,10 @@ def ligRFC2arff(exptName,activeIdxSet,ethresh=None):
             ctr = origFragClustTbl[rlif][cidx][0]
             for frag in origFragClustTbl[rlif][cidx][1]:
                 fragClustTbl[rlif][frag] = ctr
-    
-    lowef = LowEDir+ exptName + '_lowE.csv'
-    # NB: no nbest passed to loadBestLig; ALL returned
-    ligTbl, foo = loadBestLig(lowef)
-    
-    lcFile = LigCoordDir + '%s_ligCoord.pkl' % (exptName)
-    print 'Loading ligCoordPickle...',lcFile
-    ligCoordTbl = cPickle.load(open(lcFile,'rb'))
-    
-    print 'ligRFC2arff: NLig = %d' % (len(ligCoordTbl))
+        
+    print 'lig2SpArff: NLig = %d' % (len(ligCoordTbl))
     if ethresh != None:
-        print 'ligRFC2arff: ethresh=%f used' % (ethresh)
+        print 'lig2SpArff: ethresh=%f used' % (ethresh)
     allLig = ligCoordTbl.keys()
     allLig.sort()
     
@@ -1692,6 +1300,7 @@ def ligRFC2arff(exptName,activeIdxSet,ethresh=None):
     ratomLigTbl = defaultdict(dict) 
     rfqTbl = defaultdict(dict) # ratom_frag_itype_latom -> {lig: True}
     nmissFrag = 0
+    nfndFrag = 0
     nhiELig = 0
     nlig = 0
     missFragTbl = defaultdict(int)
@@ -1725,221 +1334,17 @@ def ligRFC2arff(exptName,activeIdxSet,ethresh=None):
                 nmissFrag += 1
                 missFragTbl[rlif+'_'+frag] += 1
                 continue
-            else:
-                cfrag = fragClustTbl[rlif][frag]                
+            
+            nfndFrag += 1
+            cfrag = fragClustTbl[rlif][frag]                
             
             rfq = rlif + ('+%s' % cfrag)
             rfqTbl[rfq][ligIdx] = True
     
     if ethresh != None:
-        print 'ligRFC2arff: ethresh=%f ==> nhiELig=%d NLig=%d' % (ethresh,nhiELig,nlig)
-    print 'ligRFC2arff: NRA=%d NRFQ = %d NMissFrag=%d NUniqMiss=%d' % \
-        (len(ratomLigTbl),len(rfqTbl),nmissFrag,len(missFragTbl))
-    
-    missFragFile = ArffDir+('%s_missFrag.csv' % (exptName))
-    outs = open(missFragFile,'w')
-    allMiss = missFragTbl.keys()
-    allMiss.sort(key=lambda k: missFragTbl[k],reverse=True)
-    outs.write('Miss,NMiss\n')
-    for miss in allMiss:
-        outs.write('%s,%d\n' % (miss,missFragTbl[miss]))
-    outs.close()
-
-    arrffFile = ArffDir+('%s.arff' % (exptName))
-    outs = open(arrffFile,'w')
-        
-    outs.write('@relation %s\n' % (exptName))
-    outs.write('@attribute ligand string\n')
-    
-    outs.write('@attribute e numeric\n')
-
-    ## RAtom features
-    
-    prevRAtom = None
-    allRAtomsList = list(allRAtomsSet)
-    allRAtomsList.sort()
-    for ra in allRAtomsList:
-        outs.write('@attribute %s {0,1}\n' % ra)
-       
-    ## RFQ features      
-    allRFQ = rfqTbl.keys()
-    allRFQ.sort()
-
-    nrfqFeature = 0
-    nlofreqRFQ = 0
-    allRFQList = []  # separate list, because some of rfq in allRFQ will be disqualified
-    for rfq in allRFQ:
-        bits = rfq.split('+')
-        frag = bits[1]
-
-        # Always drop low frequency fragments
-        if len(rfqTbl[rfq]) < FragMinLigFreq:
-            nlofreqRFQ += 1
-            continue
-        
-        nrfqFeature += 1
-        allRFQList.append(rfq)       
-        outs.write('@attribute %s {0,1}\n' % rfq)
-
-    print 'ligRFC2arff: NLoFreqRFQ=%d' % (nlofreqRFQ)
-    
-    outs.write('@attribute class {0,1}\n')
-
-    outs.write('@data\n')
-    
-    nout = 0
-    nactive = 0
-    nhighE = 0
-    nNoFeature = 0
-#     for il,ligIdx in enumerate(allLigIdx):
-#         zeroSuffix = (exptName.find('_PR_') == -1)
-#         ligand = ligIdx2zinc(ligIdx,zeroSuffix)
-
-    nbitsVec = []
-    nhiELig = 0
-    for il,ligIdx in enumerate(ligTbl):
-        
-#         if il % 1000 == 0:
-#             print 'ligRFC2arff: writing data...',il
-
-        e = ligTbl[ligIdx][0]
-        if ethresh != None:
-            if e > ethresh:
-                nhiELig += 1
-                continue
-                    
-        if ligIdx not in ligCoordTbl:
-            nNoFeature += 1
-            continue
-
-                
-        nout += 1
-        ligStr = ''
-
-        ligStr += '"%s",' % (ligIdx)
-            
-        ligStr += '%f,' % (e)
-        
-        nbitsSet = 0
-        for ra in allRAtomsList:
-            ligStr += '%d,' % (ligIdx in ratomLigTbl[ra])
-            if ligIdx in ratomLigTbl[ra]:
-                nbitsSet += 1
-         
-        for rfq in allRFQList:
-            ligStr += '%d,' % (ligIdx in rfqTbl[rfq])
-            if ligIdx in rfqTbl[rfq]:
-                nbitsSet += 1
-                
-        nbitsVec.append(nbitsSet)
-        
-        # ligIdx = normLigand(ligand)
-        # active = ligIdx in activeIdxSet
-        active = ligIdx in activeIdxSet
-        if active:
-            nactive += 1
-
-        ligStr += '%d\n' % (active)
-        outs.write(ligStr)
-            
-    outs.close()        
-
-    print 'ligRFC2arff: %s NHiELig=%d/%d NRFQ=%d NRAtom=%d NLow=%d NNoFeature=%d Nout=%d NActive=%d/%d' % \
-        (exptName,nhiELig,len(ligTbl),len(rfqTbl),len(allRAtomsList),len(ligTbl),nNoFeature,nout,nactive,len(activeIdxSet))
-
-    print 'ligRFC2arff: %s NRFQFeature=%d' % (exptName,len(allRFQList))
-        
-    avg,sd = basicStats(nbitsVec)
-    print 'ligRFC2arff: NBitsSet Avg=%f SD=%f' % (avg,sd)   
-
-def ligRFC2SpArff(exptName,origFragClustTbl,activeIdxSet,ethresh=None):
-    '''create ARFF encoding of expt's ligands wrt/ RLIF+CentroidFrag qualification
-    ASSUME ligCoord already built, loaded from ligCoord.pkl
-    use fragClustf to collapse fragments to cluster center
-    rlifPartition==True when fragments have been clustered wrt/ RLIF
-    output ARFF includes ligand names; filtered by weka
-    '''
-
-#     R2FCPickleFile = R2FCDir + exptName + '_r2fc.pkl'
-#     print 'Loading r2fcPickle...',
-#     origFragClustTbl = cPickle.load(open(R2FCPickleFile,'rb'))
-    # rlif -> cliqueIdx -> (ctrFrag, [cliqueFrags] )
-    print 'done.'
-    
-    # Build rlif -> frag -> fragCtr
-    fragClustTbl = {}
-    for rlif in origFragClustTbl:
-        fragClustTbl[rlif] = {}
-        for cidx in origFragClustTbl[rlif]:
-            ctr = origFragClustTbl[rlif][cidx][0]
-            for frag in origFragClustTbl[rlif][cidx][1]:
-                fragClustTbl[rlif][frag] = ctr
-    
-    lowef = LowEDir+ exptName + '_lowE.csv'
-    # NB: no nbest passed to loadBestLig; ALL returned
-    ligTbl, foo = loadBestLig(lowef)
-    
-    lcFile = LigCoordDir + '%s_ligCoord.pkl' % (exptName)
-    print 'Loading ligCoordPickle...',lcFile
-    ligCoordTbl = cPickle.load(open(lcFile,'rb'))
-    
-    print 'ligRFC2SpArff: NLig = %d' % (len(ligCoordTbl))
-    if ethresh != None:
-        print 'ligRFC2SpArff: ethresh=%f used' % (ethresh)
-    allLig = ligCoordTbl.keys()
-    allLig.sort()
-    
-    ## identify RAtom, RFQ features
-    
-    allRAtomsSet = set()  # allows enumeration when coding data
-
-    # both ratomLigTbl and rfqTbl are dict for speedy ligand lookups
-    ratomLigTbl = defaultdict(dict) 
-    rfqTbl = defaultdict(dict) # ratom_frag_itype_latom -> {lig: True}
-    nmissFrag = 0
-    nhiELig = 0
-    nlig = 0
-    missFragTbl = defaultdict(int)
-    for il,ligIdx in enumerate(allLig):
-        
-        if ethresh != None:
-            e = ligTbl[ligIdx][0]
-            if e > ethresh:
-                nhiELig += 1
-                continue
-        nlig += 1
-        allMatch = ligCoordTbl[ligIdx]
-        allMatch.sort(key = lambda m: m['rlif'] )
-        
-        for mi,matchDict in enumerate(allMatch):
-            rlif = matchDict['rlif']
-            
-            # bits = rlif.split('_')
-            # ra = '_'.join(bits[:3])            
-            # allRAtomsSet.add(ra)
-            # ratomLigTbl[ra][ligIdx] = True
-
-            # 150704: usef full rlif
-            allRAtomsSet.add(rlif)
-            ratomLigTbl[rlif][ligIdx] = True
-                        
-            frag = matchDict['frag']
-            
-            if rlif not in fragClustTbl or frag not in fragClustTbl[rlif]:
-                # print 'ligRFC2arff: missing from fragClustTbl?!',il,lig,mi,rlif,frag
-                nmissFrag += 1
-                missFragTbl[rlif+'_'+frag] += 1
-                continue
-            else:
-                cfrag = fragClustTbl[rlif][frag]                
-            
-            rfq = rlif + ('+%s' % cfrag)
-            rfqTbl[rfq][ligIdx] = True
-    
-    if ethresh != None:
-        print 'ligRFC2SpArff: ethresh=%f ==> nhiELig=%d NLig=%d' % (ethresh,nhiELig,nlig)
-    print 'ligRFC2SpArff: NRA=%d NRFQ = %d NMissFrag=%d NUniqMiss=%d' % \
-        (len(ratomLigTbl),len(rfqTbl),nmissFrag,len(missFragTbl))
+        print 'lig2SpArff: ethresh=%f ==> nhiELig=%d NLig=%d' % (ethresh,nhiELig,nlig)
+    print 'lig2SpArff: NRA=%d NRFQ = %d NFndFrag=%d NMissFrag=%d NUniqMiss=%d' % \
+        (len(ratomLigTbl),len(rfqTbl),nfndFrag,nmissFrag,len(missFragTbl))
     
     missFragFile = ArffDir+('%s_missFrag.csv' % (exptName))
     outs = open(missFragFile,'w')
@@ -1977,6 +1382,9 @@ def ligRFC2SpArff(exptName,origFragClustTbl,activeIdxSet,ethresh=None):
     outs.write('@attribute e numeric\n')
     atIdx['e'] = 2
 
+#     outs.write('@attribute dropLig {0,1}\n')
+#     atIdx['dropLig'] = 3
+
     ## RAtom features
     
     prevRAtom = None
@@ -2012,7 +1420,7 @@ def ligRFC2SpArff(exptName,origFragClustTbl,activeIdxSet,ethresh=None):
         atIdx[rfq] = begIdx
         begIdx += 1
 
-    print 'ligRFC2SpArff: NLoFreqRFQ=%d' % (nlofreqRFQ)
+    print 'lig2SpArff: NLoFreqRFQ=%d' % (nlofreqRFQ)
     
     outs.write('@attribute class {0,1}\n')
     atIdx['class'] = len(atIdx)
@@ -2029,11 +1437,12 @@ def ligRFC2SpArff(exptName,origFragClustTbl,activeIdxSet,ethresh=None):
 
     nbitsVec = []
     nhiELig = 0
+    lig2codeSet= set(ligTbl.keys())
+
     for il,ligIdx in enumerate(ligTbl):
-        
 #         if il % 1000 == 0:
 #             print 'ligRFC2arff: writing data...',il
-
+        zincid = ligIdx2zinc(ligIdx)    
         e = ligTbl[ligIdx][0]
         if ethresh != None:
             if e > ethresh:
@@ -2042,15 +1451,20 @@ def ligRFC2SpArff(exptName,origFragClustTbl,activeIdxSet,ethresh=None):
                     
         if ligIdx not in ligCoordTbl:
             nNoFeature += 1
+            dls = open(config.DropLigFile, 'a')
+            dls.write('%s,lig2SpArff: no features\n' % (zincid))
+            dls.close()
             continue
 
-                
+        lig2codeSet.discard(ligIdx)      
         nout += 1
         ligStr = '{'
 
         ligStr += '%d "%s",' % (atIdx['ligand'],ligIdx)
             
         ligStr += '%d %f,' % (atIdx['e'],e)
+
+#         ligStr += '%d %d,' % (atIdx['dropLig'],0)
         
         nbitsSet = 0
         for ra in allRAtomsList:
@@ -2073,16 +1487,18 @@ def ligRFC2SpArff(exptName,origFragClustTbl,activeIdxSet,ethresh=None):
 
         ligStr += '%d %d}\n' % (atIdx['class'],active)
         outs.write(ligStr)
-            
+
+    ndrop1 = len(lig2codeSet)
+    
     outs.close()        
 
-    print 'ligRFC2SpArff: %s NHiELig=%d/%d NRFQ=%d NRAtom=%d NLow=%d NNoFeature=%d Nout=%d NActive=%d/%d' % \
-        (exptName,nhiELig,len(ligTbl),len(rfqTbl),len(allRAtomsList),len(ligTbl),nNoFeature,nout,nactive,len(activeIdxSet))
+    print 'lig2SpArff: %s NHiELig=%d/%d NRFQ=%d NRAtom=%d NLow=%d NNoFeature=%d NDrop1=%d Nout=%d NActive=%d/%d' % \
+        (exptName,nhiELig,len(ligTbl),len(rfqTbl),len(allRAtomsList),len(ligTbl),nNoFeature,ndrop1,nout,nactive,len(activeIdxSet))
 
-    print 'ligRFC2SpArff: %s NRFQFeature=%d' % (exptName,len(allRFQList))
+    print 'lig2SpArff: %s NRFQFeature=%d' % (exptName,len(allRFQList))
         
     avg,sd = basicStats(nbitsVec)
-    print 'ligRFC2SpArff: NBitsSet Avg=%f SD=%f' % (avg,sd)   
+    print 'lig2SpArff: NBitsSet Avg=%f SD=%f' % (avg,sd)   
     
 def exptName2bits(exptName):
     
@@ -2116,164 +1532,7 @@ def exptNameDiff(exptName1,exptName2):
             diffs.append( (b, bits2[i]) )
         
     return diffs
-
-def bldRLIFTbl(rdf):
-    
-    ## first pass: build dict of ALL interaction features
-    rlifInfoTbl = defaultdict(lambda: defaultdict(lambda: defaultdict(list))) # pos -> ratom -> itype -> [atoms] 
-    
-    reader = csv.DictReader(open(rdf))
-    for i,entry in enumerate(reader):
-        # cf analBestRLIF
-        # RLIF,Freq
-        rlif = entry['RLIF']  
-        fbits = feature2bits(rlif)
-        chain,rpos,raa,ratom,itype,latom = fbits
-        
-        if itype=='vdw' and not VDWIncuded:
-            continue
-
-        if chain not in ['A','B']:
-            continue
-        
-        if chain == 'B' and AChainOnly:
-            continue
-        
-#         if len(latom)>0:
-#             latom = latom[0]
-            
-        rlifInfoTbl[rpos][ratom][itype].append(latom)
-
-    ## second pass:             
-    rlifTbl = {}
-    for rpos in rlifInfoTbl:
-        rposStr = '%03d' % (rpos)
-        allRAA = rlifInfoTbl[rpos].keys()  # NB: required to make defaultdict keys stable!
-        for raa in allRAA:
-            allIT = rlifInfoTbl[rpos][raa].keys()
-            for itype in allIT:
-                f = ''
-                if RLIFLevel=='PAI':
-                    f = '_'.join([rposStr,raa,itype])
-                    rlifTbl[f] = True
-                elif RLIFLevel=='PAISet' or RLIFLevel=='PAIatom':
-                    latomSet = rlifInfoTbl[rpos][raa][itype]
-                    if RLIFLevel=='PAISet':
-                        latomSet.sort()
-                        atomSetString = '%s' % (latomSet)
-                        f = '_'.join([rposStr,raa,itype,atomSetString])
-                        rlifTbl[f] = True
-                    else: # 'PAIatom'
-                        for a in latomSet:
-                            f = '_'.join([rposStr,raa,itype,a])
-                            rlifTbl[f] = True
-
-    return rlifTbl
-      
-def scoreLigList(ligList):
-    '''compute unique, nactive over ligList
-    '''
-    
-    ligSet = set(ligList)
-    actSet = [lig for lig in ligSet if lig.find('CHEMBL') != -1]
-    return len(ligSet), len(actSet) 
-                                              
-def bldRAtomFrag(ligCoordTbl,outf):
-    '''report per-RAtom X itype sets of fragments, to be clustered
-    '''
-    
-    # ligand -> [ {rlif,frag,fragIdx, latomFull,dropped,flaNames,fmap,laIdx,laCoord,fragCoord} ]
- 
-    print 'bldRAtomFrag: NLig = %d' % (len(ligCoordTbl))
-    allLig = ligCoordTbl.keys()
-    allLig.sort()
-
-    railafTbl = defaultdict(lambda: defaultdict(list)) # rlif -> frag ->  [ligands]
-    for lig in allLig:
-        
-        allMatch = ligCoordTbl[lig]
-        allMatch.sort(key = lambda m: m['rlif'] )
-        
-        for mi,matchDict in enumerate(allMatch):
-            rlif = matchDict['rlif']
-            frag = matchDict['frag']
-            railafTbl[rlif][frag].append(lig)
-            
-    print 'bldRAtomFrag: NRAIF = %d' % (len(railafTbl))
-    
-    outs = open(outf,'w')
-    outs.write('RAI,Frag,NLig,NUniq,NActive\n')
-    allRAILA = railafTbl.keys()
-    allRAILA.sort()
-    nout = 0
-    fragFreqVec = []
-    # print 'RAI,NFrag,NLig,NAct'
-    for rai in allRAILA:
-        fragFreqVec.append(len(railafTbl[rai]))
-        totLig = 0
-        totAct = 0
-        for frag in railafTbl[rai]:
-            ligList = railafTbl[rai][frag]
-            nuniqLig,nactLig = scoreLigList(ligList)
-            outs.write('%s,%s,%d,%d,%d\n' % (rai,frag,len(ligList),nuniqLig,nactLig))
-            nout += 1
-            totLig += len(railafTbl[rai][frag])
-            totAct += nactLig
-        # print '%s,%d,%d,%d' %  (rai,len(railafTbl[rai]),totLig,totAct)
-    outs.close()
-    avg,sd = basicStats(fragFreqVec)
-    print 'bldRAtomFrag: NRAI=%d NRAIFOut=%d NFrag/RAI Avg=%f SD=%f' % (len(allRAILA),nout,avg,sd)
-
-def bldRAtomFragSim(fragSimf,ratomFragf,ratomFSimf):
-    '''combine RAI-qualified fragments with inter-frag similarites
-    to create partition of inter-frag similarites  wrt/ RAI-qualified subsets
-    used as basis for rai-frag clustering by bldFragClusters()
-    '''
-    
-    fragSimTbl = defaultdict(dict)
-    reader = csv.DictReader(open(fragSimf))        
-    for i,entry in enumerate(reader):
-        # Frag1,Frag2,Sim
-        frag1 = entry['Frag1']
-        frag2 = entry['Frag2']
-        sim =   float(entry['Sim'])
-        fragSimTbl[frag1][frag2] = sim
-        
-    raiFragSet = defaultdict(set) # rai -> [fragments]
-    reader = csv.DictReader(open(ratomFragf))        
-    for i,entry in enumerate(reader):
-        # RAI,Frag,NLig,NUniq,NActive
-        rai = entry['RAI']
-        frag = entry['Frag']
-        raiFragSet[rai].add(frag)
-        
-    outs = open(ratomFSimf,'w')
-    outs.write('RAI,Frag1,Frag2,Sim')
-
-    allRAI = raiFragSet.keys()
-    allRAI.sort()
-    for rai in allRAI:
-        allFrag = list(raiFragSet[rai])
-        allFrag.sort()
-        for frag1 in allFrag:
-            for frag2 in allFrag:
-                if frag2 <= frag1:
-                    continue
-                try:
-                    sim = fragSimTbl[frag1][frag2]
-                except Exception,e1:
-                    try:
-                        sim = fragSimTbl[frag2][frag1]
-                    except Exception,e2:
-                        print 'huh?!',e2
-                outs.write('%s,%s,%s,%f\n' % (rai,frag1,frag2,sim))
-    
-    outs.close()
-          
-    
-# import psycopg2
-        
-           
+                                                         
 def getAtoms(mol):
     # http://openbabel.org/docs/dev/UseTheLibrary/PythonDoc.html#using-iterators
     
@@ -2314,8 +1573,13 @@ def getAtoms(mol):
 
 def mapLig2Features(ligIdx,fragments,ligMol):
 
-    obc = ob.OBConversion()
-    obc.SetInFormat('smi')
+    obcM2C = ob.OBConversion()
+    obcM2C.SetOutFormat('can')
+    obcM2C.SetOptions("-i", obcM2C.OUTOPTIONS) # produce smiles without isomeric or stereo information, TJO, 9 Apr 15
+
+    obcC2M = ob.OBConversion()
+    obcC2M.SetInAndOutFormats('can','mol')
+    obcC2M.SetOptions("-i", obcC2M.INOPTIONS) # produce smiles without isomeric or stereo information, TJO, 9 Apr 15
                 
     latoms = getAtoms(ligMol)
     
@@ -2330,7 +1594,7 @@ def mapLig2Features(ligIdx,fragments,ligMol):
     for fi,frag in enumerate(fragments):
         fragMol = ob.OBMol()
 
-        obc.ReadString(fragMol,frag)
+        obcC2M.ReadString(fragMol,frag)
         
         ## TJO 151021
         fragMol.DeleteHydrogens()
@@ -2341,27 +1605,27 @@ def mapLig2Features(ligIdx,fragments,ligMol):
         bindDict[fi]['fragment'] = frag
         bindDict[fi]['fatoms'] = fatoms
     
-        # TJO 11/6/2015
-     '''new code block using smart pattern matching and mapping
-        intended to produce same data structures and mapping, but
-        with fewer (no!) missing mappings
-        '''
-    pat = ob.OBSmartsPattern()
-    if  pat.Init(frag) and pat.Match(ligMol):
-
-        #print 'NIso=%d' % (pat.NumMatches())
-        if pat.NumMatches() == 0:
-            # print "No isomorphs?!",zincid,fi,frag
-            bindDict[fi]['maps'] = None
-        else:
-
-            maps = list()
-            for p in pat.GetUMapList():
-                maps.append( [(a,b-1) for (a,b) in enumerate(p)] )
-
-            # print fi,ii, maps
-
-            bindDict[fi]['maps'] = maps
+        fragQry = ob.CompileMoleculeQuery(fragMol)
+    
+        mapper = ob.OBIsomorphismMapper.GetInstance(fragQry)
+        
+        if fragQry and mapper:
+            isomorphs = ob.vvpairUIntUInt()
+            mapper.MapUnique(ligMol, isomorphs)
+            
+            # print 'NIso=%d' % (len(isomorphs))
+            if len(isomorphs)==0:
+                # print "No isomorphs?!",zincid,fi,frag
+                bindDict[fi]['maps'] = None
+            else:
+      
+                maps = list()
+                for ii,isomorph in enumerate(isomorphs):
+                    maps.append([(a,b) for (a,b) in isomorph])
+    
+                    # print fi,ii, maps
+                    
+                bindDict[fi]['maps'] = maps
 
         else:
             zincid = ligIdx2zinc(ligIdx)
@@ -2511,17 +1775,20 @@ def bldLig2frag(ligTbl,exptName,verbose=False):
         vpps = open(config.BindPPFile, 'w')
         vpps.close()
         
-    obc = ob.OBConversion()
-    obc.SetInAndOutFormats('pdbqt','can')
-    obc.SetOptions("-i", obc.OUTOPTIONS) # produce smiles without isomeric or stereo information, TJO, 9 Apr 15
+    obcP2M = ob.OBConversion()
+    obcP2M.SetInAndOutFormats('pdbqt','mol')
     
+    obcM2C = ob.OBConversion()
+    obcM2C.SetInAndOutFormats('mol','can')
+    obcM2C.SetOptions("-i", obcM2C.OUTOPTIONS) # produce smiles without isomeric or stereo information, TJO, 9 Apr 15
+   
     pat = ob.OBSmartsPattern();
    
     ngood=0
     npoor=0
     nslide=0
     nerr = 0
-        
+    
     for iz,ligIdx in enumerate(ligTbl.keys()):
                 
         e,batch = ligTbl[ligIdx]
@@ -2535,7 +1802,7 @@ def bldLig2frag(ligTbl,exptName,verbose=False):
             bno = int(batch)
             pdbqf = dockFile(exptName,bno,ligIdx)
     
-            if pdbqf == None:
+            if pdbqf == None:                
                 errs.write('missing pdbqt file: %d,%s\n' % (bno,ligIdx))
                 dls = open(config.DropLigFile, 'a')
                 dls.write('%s,bldLig2Frag: missing pdbqt file: %d,%s\n' % (zincid,bno,ligIdx))
@@ -2544,17 +1811,24 @@ def bldLig2frag(ligTbl,exptName,verbose=False):
                 continue
         
         ligMol = ob.OBMol()
-        obc.ReadFile(ligMol,pdbqf)
+        obcP2M.ReadFile(ligMol,pdbqf)
         
+        ## 2do: need to convert ligMol to canonical smiles(with -i non-iso as above)
+        # so that conventions for aromaticity are consistently SMILES vs.
+        # smiles and pdbqt
+
+        # THEN convert to mol from this pdbqt->smiles->mol
+        # vs pdbqt -> mol
+       
         # NB RECAP works directly from ligmol    
         # don't need to build canonical string
         # except to include it in bindDict
         
-        ligSmilesC = obc.WriteString(ligMol)
+        ligSmilesC = obcM2C.WriteString(ligMol)
         # this returns both the canonSmiles string, but also PDBQT file name?!
         lsbits = ligSmilesC.split()
         canon = lsbits[0]
-
+        
         # make copy in order to alter mol
         amol = ob.OBMol(ligMol)
         
@@ -2565,7 +1839,7 @@ def bldLig2frag(ligTbl,exptName,verbose=False):
         currRecap.decide_multiples()
         currRecap.split()
         
-        ligRecap = obc.WriteString(amol,True)
+        ligRecap = obcM2C.WriteString(amol,True)
         # this returns both the canonSmiles string, but also PDBQT file name?!
         lrbits = ligRecap.split()
         recapStr = lrbits[0]
@@ -2579,7 +1853,7 @@ def bldLig2frag(ligTbl,exptName,verbose=False):
         ###################################
         
         # NB: augment bindDict with canon here vs. in mapLig2Features, 
-        # since obc created here
+        # since obcM2C created here?
         
         bindDict['canon'] = canon
         
@@ -2660,7 +1934,7 @@ def bldLig2frag(ligTbl,exptName,verbose=False):
     errs.close()
     
     return l2fTbl
-   
+
 def ppBindDict(zincid,bindDict,outs):
     outs.write('* %s NFrag=%d NLigAtom=%d\n' % (zincid,bindDict['nfrag'],len(bindDict['latoms'])))
     for f in range(bindDict['nfrag']):
@@ -2707,66 +1981,7 @@ def ppBindDict(zincid,bindDict,outs):
                 else:
                     outStr += '   |'
             outs.write(outStr+'\n')
-
-def pybelBits2binary(fpbits):
-    bitlist=list('0'*1024)
-    for item in fpbits:
-        bitlist[item-1]='1'
-    bitstring = ''.join(bitlist)
-    return bitstring
-
-def bldfragFP(fragFile,fragFPFile):   
-    
-    outs = open(fragFPFile,'w')
-    outs.write('Fragment,FP,FP2,FPnum\n')
-    reader = csv.DictReader(open(fragFile))
-    for i,entry in enumerate(reader):
-        # fragment,nref
-        frag = entry['fragment']
-        mol = pybel.readstring('can',frag)
-        fp = mol.calcfp()
-        bits1 = pybelBits2binary(fp.bits)
-        bits2 = ''.join([format(num,'032b') for num in fp.fp])
-        numlist = [num for num in fp.fp]
-        outs.write('%s,%s,%s,"%s"\n' % (frag,bits1,bits2,numlist))
-    outs.close()
-
-def rptFragSim(fragFile,fragSimFile,minSim=1e-3):
-    '''filter from fragments to pairwise similarities
-    reporting to file is important because of lig2fragments openbabel dependency
-    '''
-    
-    reader = csv.DictReader(open(fragFile))
-    molFPTbl = {}
-    for i,entry in enumerate(reader):
-        # fragment,nref
-        frag = entry['Fragment']
-        mol = pybel.readstring('can',frag)
-        fp = mol.calcfp()
-        molFPTbl[frag] = fp
-
-    outs = open(fragSimFile,'w')
-    outs.write('Frag1,Frag2,Sim\n')
-    nsmall = 0
-    nout = 0
-    allFrag = molFPTbl.keys()
-    allFrag.sort()
-    for fi,frag1 in enumerate(allFrag):
-        for fj,frag2 in enumerate(allFrag):
-            if fj >= fi:
-                continue
-            fp1 = molFPTbl[frag1]
-            fp2 = molFPTbl[frag2]
-            tsim = fp1 | fp2
-            if tsim < minSim:
-                nsmall += 1
-            else:
-                outs.write('%s,%s,%f\n' % (frag1,frag2,tsim))
-                nout += 1
-
-    outs.close()
-    print 'rptFragSim: NFrag=%d Nsmall (< %f) =%d NOut=%d' % (len(allFrag),minSim,nsmall,nout)
-   
+      
 def bldLigCoordFromPDBQT(exptName,r2fTbl,ligTbl):
     ''' ligCoord : ligIdx -> [matchDict]
     each matchDict corresp to rlif+frag+ligand+fragIdx instance
@@ -2774,13 +1989,16 @@ def bldLigCoordFromPDBQT(exptName,r2fTbl,ligTbl):
     with {laIdx,laCoord,fragCoord=fragInfoList}
     '''
 
-    ligAtoms = defaultdict(list) # lig -> [ {rlif,frag,fragIdx,latomFull,dropped,flaNames,fmap} ]
+    ligAtoms = defaultdict(list) # ligIdx -> [ {rlif,frag,fragIdx,latomFull,dropped,flaNames,fmap} ]
+    lig2codeSet= set(ligTbl.keys())
     for rlif in r2fTbl.keys():  # RLIF -> frag -> [ (zincid,fragIdx,latomFull,fragInfo) ]
         for frag in r2fTbl[rlif]:
             for ligFragInfo in r2fTbl[rlif][frag]:
-                zincid,fragIdx,latomFull,fragInfo = ligFragInfo
                 
-                ligAtoms[zincid].append( {  'rlif': rlif,
+                ligIdx,fragIdx,latomFull,fragInfo = ligFragInfo
+                # NB: discard doesn't bitch if it's already gone!
+                lig2codeSet.discard(ligIdx)
+                ligAtoms[ligIdx].append( {  'rlif': rlif,
                                             'frag': frag,
                                             'fragIdx': fragIdx,
                                             'latomFull': latomFull,
@@ -2789,13 +2007,33 @@ def bldLigCoordFromPDBQT(exptName,r2fTbl,ligTbl):
                                             'dropped': fragInfo['dropped'],
                                             'flaNames': fragInfo['flaNames'],
                                             'fmap': fragInfo['useMap']} )
-                
-    print 'bldLigCoordFromPDBQT: %s NLigands=%d' % (exptName,len(ligAtoms))                           
+        
+    print 'bldLigCoordFromPDBQT: %s NLigands=%d NMiss=%d' % (exptName,len(ligAtoms),len(lig2codeSet))
+
+    ## Check missing against dropped ligands
+    dropLig = defaultdict(list)
+    if os.path.exists(config.DropLigFile):
+        reader = csv.DictReader(open(config.DropLigFile))
+        for i,entry in enumerate(reader):
+            zincid = entry['ZINCID']
+            reason = entry['Reason']
+            ligIdx = normLigand(zincid)
+            # NB: multiple reasons combined
+            dropLig[ligIdx].append(reason)
+            
+    unRptDrop = lig2codeSet - set(dropLig.keys())
+    if len(unRptDrop)==0:
+        print 'bldLigCoordFromPDBQT: all dropped reported'
+    else:
+        print 'bldLigCoordFromPDBQT: %d dropped unreported' % (len(unRptDrop))
+#         for ligIdx in unRptDrop:
+#             print 'bldLigCoordFromPDBQT: undropped missing?!',ligIdx
+        print 'bldLigCoordFromPDBQT: dropped unreported:',str(unRptDrop)
     
     allLig = ligAtoms.keys()
     allLig.sort()
     
-    errf = LigCoordDir + exptName + 'ligCoord_err.txt'
+    errf = LigCoordDir + exptName + '_ligCoord_err.txt'
     errs = open(errf,'w')
     nerr = 0
     
@@ -2803,14 +2041,15 @@ def bldLigCoordFromPDBQT(exptName,r2fTbl,ligTbl):
     # maintain freq counts of number of RLIF-interacting latoms associated with same ligand
     multMatchFreq = defaultdict(int)
     nmissla = 0
-    for il,zincid in enumerate(allLig): 
+    for il,ligIdx in enumerate(allLig): 
 
         # each match corresp to rlif+frag+ligand+fragIdx instance
-        multMatchFreq[len(ligAtoms[zincid])] += 1
+        multMatchFreq[len(ligAtoms[ligIdx])] += 1
 #             for matchDict in ligAtoms[lig]:
 #                 print 'bldLigCoordFromPDBQT:',exptName,lig,matchDict['rlif'],matchDict['fragIdx'],matchDict['latomFull'],matchDict['frag']
             
-        ligIdx = normLigand(zincid)
+        # ligIdx = normLigand(zincid)
+        zincid = ligIdx2zinc(ligIdx)
                     
         if ligIdx not in ligTbl:
             errs.write('ligand missing from lowLig %s %s\n' % (exptName,zincid))
@@ -2835,7 +2074,8 @@ def bldLigCoordFromPDBQT(exptName,r2fTbl,ligTbl):
         ligMol = allMol.next() # ASSUME only one mol PDBQT
         obmol = ligMol.OBMol
         
-        for matchDict in ligAtoms[zincid]:
+        someFragMatch = False
+        for matchDict in ligAtoms[ligIdx]:
             laIdx = None
             laCoord = None
             laName = matchDict['latomFull']
@@ -2872,15 +2112,14 @@ def bldLigCoordFromPDBQT(exptName,r2fTbl,ligTbl):
             
             matchDict['laIdx'] = laIdx
             matchDict['laCoord'] = laCoord
-            matchDict['fragCoord'] = fragInfoList
             
             for fi,finfo in enumerate(fragInfoList):
                 if finfo == None:
                     fragInfoList[fi] =  (matchDict['flaNames'][fi],None,None)
                 else:
-                    # assert finfo[0] == matchDict['flaNames'][fi]
-                    if finfo[0] != matchDict['flaNames'][fi]:
-                        print 'huh'
+                    assert finfo[0] == matchDict['flaNames'][fi]
+
+            matchDict['fragCoord'] = fragInfoList
             
             ligCoord[ligIdx].append(matchDict)
     
@@ -2909,7 +2148,7 @@ def loadActives(actives_file):
         actives.append(active.strip())
     fs.close()
     return actives
-            
+
 ### from bind2RLIF2frag
 
 def dockFile(exptName,bno,ligIdx):
@@ -2986,101 +2225,23 @@ def dockFile(exptName,bno,ligIdx):
         return pdbqf
     else:
         return None
-    
-def rptUniqLigFrag(l2fFile,ufragFile,minRef=1):
 
-    reader = csv.DictReader(open(l2fFile))
-    fragTbl = defaultdict(list) # frag -> [ligand]
-    totFrag = 0
-    for i,entry in enumerate(reader):
-        # Ligand,FragIdx,Fragment,Map
-        ligand = entry['Ligand']
-        frag = entry['Fragment']
-        fragTbl[frag].append(ligand)
-        totFrag += 1
-    
-    allFrag = fragTbl.keys()
-    
-    nout = 0
-    ndrop = 0
-    allFrag.sort() # sort lexically on fragment
-    outs = open(ufragFile,'w')
-    outs.write('Fragment\n')
-    for frag in allFrag:
-        if len(fragTbl[frag]) > minRef:
-            outs.write('%s\n' % (frag))
-            nout += 1
-        else:
-            ndrop += 1
-
-    outs.close()
-    print 'rptUniqLigFrag: NFrag=%d TotFragRef=%d NLowFreq=%d NOut=%d' % \
-        (len(fragTbl),totFrag,ndrop,nout)
-        
-    return nout
- 
-def rptFragLig(l2fFile,ufragFile,minRef=1):
-
-    reader = csv.DictReader(open(l2fFile))
-    fragTbl = defaultdict(list) # frag -> [ligand]
-    totFrag = 0
-    for i,entry in enumerate(reader):
-        # Ligand,FragIdx,Fragment,Map
-        ligand = entry['Ligand']
-        frag = entry['Fragment']
-        fragTbl[frag].append(ligand)
-        totFrag += 1
-    
-    allFrag = fragTbl.keys()
-    
-    nout = 0
-    allFrag.sort() # sort lexically on fragment
-    outs = open(ufragFile,'w')
-    outs.write('Fragment,Ligand,\n')
-    for frag in allFrag:
-        if len(fragTbl[frag]) > minRef:
-            nout += 1
-            for ligand in fragTbl[frag]:
-                outs.write('%s,%s\n' % (frag,ligand))
-
-    outs.close()
-    print 'rptUniqLigFrag: NFrag=%d TotFragRef=%d NOut=%d' % \
-        (len(fragTbl),totFrag,nout)
-    
 def rptR2FTbl(r2fTbl,outf):
     
     allRLIF = r2fTbl.keys()  # RLIF -> frag -> [ (zincid,fragIdx) ]
     allRLIF.sort()
     outs = open(outf,'w')
-    outs.write('RLIF,Fragment,NLig,"[(ZINCID,FragIdx)]"\n')
+    outs.write('RLIF,Fragment,NLig,"[(ligIdx,FragIdx)]"\n')
     for rlif in allRLIF:
         for frag in r2fTbl[rlif]:
             outs.write('%s,%s,%d,"%s"\n' % (rlif,frag,len(r2fTbl[rlif][frag]),r2fTbl[rlif][frag]))
     outs.close()
-
-def addAtomIdx(pdbqf):
-
-    allMol = pybel.readfile('pdbqt', pdbqf)
-    # print 'len(allMol)',len(allMol)
-    ligMol = allMol.next() # ASSUME only one mol PDBQT
-    obmol = ligMol.OBMol
     
-    # 2do: any way to replace iteration thru all atoms with index addressing?!
-    for res in ob.OBResidueIter(obmol):
-        for obatom in ob.OBResidueAtomIter(res):
-            pbatom = pybel.Atom(obatom)
-            idx = pbatom.idx
-            # print pbatom.idx,atName,pbatom.coords,pbatom.type
-            # NB: need to strip GetAtomID(obatom) !
-            atName = res.GetAtomID(obatom).strip()
-            laCoord = pbatom.coords
-
-                    
 def bldRLIF2frag(exptName,ligTbl,l2fTbl,errf,dockFileTbl=None,bstart=None,bend=None,verbose=False):
     '''Aggregate RECAP fragments associated with RLIF
     
-    RLIF -> frag -> [ (zincid,fragIdx,map,latomFull) ]
-    (Re-) acquire RLIF directly from PDBQT using crawlADV routines
+    RLIF -> frag -> [ (ligIdx,fragIdx,map,latomFull) ]
+    NB: (Re-) acquire RLIF directly from PDBQT using crawlADV routines
     
     dockFileTbl added to make combineLigLibTarget() work
     '''
@@ -3088,27 +2249,41 @@ def bldRLIF2frag(exptName,ligTbl,l2fTbl,errf,dockFileTbl=None,bstart=None,bend=N
     nmissFrag = 0
     nmissflig = 0
     nflig = 0
-    r2fTbl = defaultdict( lambda: defaultdict(list) ) # RLIF -> frag -> [ (zincid,fragIdx,latomFull,fragInfo) ]
+    r2fTbl = defaultdict( lambda: defaultdict(list) ) # RLIF -> frag -> [ (ligIdx,fragIdx,latomFull,fragInfo) ]
 
     ligList = ligTbl.keys()
     ligList.sort()
     
-    nmissIdx = 0
+    nmissR2F = 0
     
     errs = open(errf,'w')
     nerr = 0
     
     for iz,ligIdx in enumerate(ligList):
         zincid = ligIdx2zinc(ligIdx)
-        e,batch = ligTbl[ligIdx]
         
-        if zincid not in l2fTbl:
-            # print 'bldRLIF2frag: covTbl lig missing from fragments?!',lig
+        if ligIdx not in l2fTbl:
+            # print 'bldRLIF2frag: ligTbl missing from fragments?!',zincid
             nmissflig += 1
             continue
         
         nflig += 1
-        ligFrags = l2fTbl[zincid]
+        
+        ligFragOrig = l2fTbl[ligIdx]
+        ligFrags = []
+        # remove cruff from fragment list
+        for fi,fragInfo in enumerate(ligFragOrig):
+            if fragInfo == None:
+                errs.write('no fragInfo %s %s\n' % (zincid,fi))
+                nerr += 1
+                continue
+            if fragInfo['flaNames'] == None:
+                errs.write('no flaNames %s %s %s\n' % (zincid,fi,fragInfo))
+                nerr += 1
+                continue
+            ligFrags.append(fragInfo)
+
+        e,batch = ligTbl[ligIdx]
 
         if dockFileTbl:
             pdbqf = ProcDir + dockFileTbl[zincid]
@@ -3146,65 +2321,105 @@ def bldRLIF2frag(exptName,ligTbl,l2fTbl,errf,dockFileTbl=None,bstart=None,bend=N
         #            'recept': 'x3KFN_prASw0c0'  
         #            'src' : 's> 9 '               
 
-        # 2do: tpi, ppi binary interactions refer to ligand "CENTER" coordinates      
-        for itype in ['hba','hbd','mtl']:
-            
+        # dbg 151029: use pybel to reconcile ppi,tpi coordinates?
+        allMol = pybel.readfile('pdbqt', pdbqf)
+        # print 'len(allMol)',len(allMol)
+        ligMol = allMol.next() # ASSUME only one mol PDBQT
+        obmol = ligMol.OBMol
+
+        #dbg 151029'
+        atomCoord = {}
+        for res in ob.OBResidueIter(obmol):
+            for obatom in ob.OBResidueAtomIter(res):
+                pbatom = pybel.Atom(obatom)
+                idx = pbatom.idx
+                atName = res.GetAtomID(obatom).strip()
+                laIdx = idx
+                laCoord = pbatom.coords
+                laType = pbatom.type
+                atomCoord[idx] = [atName,laType,laCoord]
+        
+        anyLigMatch = False
+        
+        # 2do: tpi, ppi binary interactions don't refer to atoms, but both receptor "CENTER" and ligand "CENTER" coordinates      
+#         for itype in ['hba','hbd','mtl']:
+        for itype in BinaryITypes:
+           
             if itype not in ligData:
                 continue
-            
+
             for ir,rawRlif in enumerate(ligData[itype]):
                 
                 chain,res,ratom,latomFull = rawRlif
-                       
+                               
+                # 151026 find which obmol atom is closest to coordinates associated with ppi/tpi center
+                if itype=='tpi' or itype=='ppi':
+                    minLA = None
+                    minDist = 1.0e6
+                    laTuple = tuple(eval(latomFull)) # NB: latomFull is a string
+                    obLAnp = np.array(laTuple)
+                    for laIdx in atomCoord:
+                        atName,laType,laCoord = atomCoord[laIdx]
+                        if atName.startswith('H') or atName.startswith('C'):
+                            continue
+                        rlifLAnp = np.array(laCoord)
+                        l2norm = np.linalg.norm(obLAnp - rlifLAnp)
+                        # print laIdx,atName,l2norm
+                        if l2norm < minDist:
+                            minLA = laIdx
+                            minDist = l2norm
+                    latomFull = atomCoord[minLA][0]
+                    # 2do: get real ratom
+                    ratom = ''
+         
                 # 150516: drop atomIdx!
                 latom = latomFull[0]
                 # 2do: replace with ASSERT
                 try:
-                    latomFoo = int(latomFull[1]) 
+                    latomIdx = int(latomFull[1]) 
                 except Exception,e:
-                    nmissIdx += 1
                     errs.write('odd latom %s %s %s\n' % (zincid,ir,rawRlif))
                     nerr += 1
                     continue
+
                 
                 rlif = bldFeature2(chain,res,ratom,itype,latom)
                 
                 fragFnd = False
                 for fi,fragInfo in enumerate(ligFrags):
-                    if fragInfo == None:
-                        errs.write('no fragInfo %s %s\n' % (zincid,fi))
-                        nerr += 1
-                        continue
-                    if fragInfo['flaNames'] == None:
-                        errs.write('no flaNames %s %s %s\n' % (zincid,fi,fragInfo))
-                        nerr += 1
-                        continue
                     
-                    ## FOUND: (full ligand atom name from docking found in 
-                    ##    fragInfo['flaNames'] associated with ligand's fragments by bldLig2Frag-> mapLig2Features -> getAtoms() ->
-                    ##        OBRESIDUE.GetAtomID(atom).strip() OR OBElementTable.GetSymbol(atom.GetAtomicNum()) 
-                    ## all fragInfo from l2fTbl carried forward
                     if latomFull in fragInfo['flaNames']:
+                        ## FOUND: (full ligand atom name from docking found in 
+                        ##    fragInfo['flaNames'] associated with ligand's fragments by bldLig2Frag-> mapLig2Features -> getAtoms() ->
+                        ##        OBRESIDUE.GetAtomID(atom).strip() OR OBElementTable.GetSymbol(atom.GetAtomicNum()) 
+                        ## all fragInfo from l2fTbl carried forward
                         frag = fragInfo['fragment']
-                        r2fTbl[rlif][frag].append( (zincid,fi,latomFull,fragInfo) )
+                        r2fTbl[rlif][frag].append( (ligIdx,fi,latomFull,fragInfo) )
                         fragFnd = True
+                        anyLigMatch = True
                         break
                     ## 
                     
                 if not fragFnd:
-                    errs.write('latomFull not found %s %s\n' % (zincid,latomFull))
+                    errs.write('latomFull not found %s %s %s\n' % (zincid,latomFull,itype))
                     nerr += 1
                     nmissFrag += 1
                     continue
-                
+        
+        if not anyLigMatch:
+            errs.write('No RLIF-Frag interactions %s\n' % (zincid))
+            nmissR2F += 1
+            dls = open(config.DropLigFile, 'a')
+            dls.write('%s,bldRLIF2frag: No RLIF-Frag interactions\n' % (zincid))
+            dls.close()
+            
         if verbose and iz % 1000 == 0:
             print 'bldRLIF2frag: iz=%d nunboundLigAtom=%d' % (iz,nmissFrag)
             
-        ## eo-ligList
-        
+    ## eo-ligList
     errs.close()
     
-    print 'bldRLIF2frag: NLig=%d NMissLig=%d NMissFrag=%d NErr=%d NMissIdx(SAMPL4)=%d' % (nflig,nmissflig,nmissFrag,nerr,nmissIdx)
+    print 'bldRLIF2frag: NLig=%d NMissLig=%d NMissFrag=%d NErr=%d NMissR2F=%d' % (nflig,nmissflig,nmissFrag,nerr,nmissR2F)
     ## need real dictionary to serialize/pickel!
     
     r2fTbl2 = {} # RLIF -> frag -> [ (zincid,fragIdx,latomFull,fragInfo) ]
@@ -3216,7 +2431,7 @@ def bldRLIF2frag(exptName,ligTbl,l2fTbl,errf,dockFileTbl=None,bstart=None,bend=N
 
     return r2fTbl2
 
-def bldR2FCtr_v2(exptName,r2fTbl,ligTbl,outf,verbose=False):
+def bldR2FCtr(exptName,r2fTbl,ligTbl,outf,verbose=False):
     ''' returns: r2fcTbl: rlif -> cliqueIdx -> (ctrFrag, [cliqueFrags] )
     with rlif-specific fragment clustering
     symmetric entries both kept for bldFragClusters()
@@ -3244,7 +2459,7 @@ def bldR2FCtr_v2(exptName,r2fTbl,ligTbl,outf,verbose=False):
     allRLIF.sort()
     r2fcTbl = {}  # rlif -> cliqueIdx -> (ctrFrag, [cliqueFrags] )
     if verbose:
-        print 'bldR2FCtr_v2-verbose: NRLIF=%d' % (len(allRLIF))
+        print 'bldR2FCtr-verbose: NRLIF=%d' % (len(allRLIF))
         print 'Idx,RLIF,NFrag,Sec'
     for ir,rlif in enumerate(allRLIF):
         allFrag = r2fTbl[rlif].keys()
@@ -3301,315 +2516,6 @@ def bldR2FCtr_v2(exptName,r2fTbl,ligTbl,outf,verbose=False):
         
     outs.close()
     return r2fcTbl
-
-def loadFragDist(inf,verboseFreq=None):
-    ''' build fragDist: frag1,frag2 -> (1.0 - Tanimoto similarity)
-    
-    loadFragDist built from output of query:
-    select a.fragment afrag, b.fragment bfrag ,oc.tanimoto(a.fp,b.fp)
-    from rik.fragdudefp2 a, rik.fragdudefp2 b
-    where oc.nbits_set(a.fp) > 0 and oc.nbits_set(b.fp) > 0 and a.fragment
-    
-    very large for DUDE_PR; required lig2fragment.rptCullSimHist()
-    
-    '''
-        
-    fragDist = {}
-    reader = csv.DictReader(open(inf))
-    for i,entry in enumerate(reader):
-        if verboseFreq != None and ((i % verboseFreq) == 0):
-            print 'loadFragDist: Line:', i
-            
-        # generated by lig2fragment.rptCullSimHist()
-        # NB: retaining \t separator used by pg_dump
-        # 'Frag1\tFrag2\tSim\n' 
-        frag1 = entry['Frag1']
-        frag2 = entry['Frag2']
-        
-        # fragSim[frag1][frag2] = float(entry['Sim'])
-        dist = 1 - float(entry['Sim'])
-        if frag1 in fragDist:
-            fragDist[frag1][frag2] = dist
-        else:
-            fragDist[frag1] = { frag2: dist}
-                
-        
-    print 'loadFragDist: NFrag=%d' % (len(fragDist))
-    return fragDist
- 
-def loadFragSim(inf):
-    ''' build fragSim: frag1,frag2 -> Tanimoto similarity
-    
-    (n choose 2) upper diagonal pairs only, sorted on frag
-    built via:
-            
-    select fragment, ob.fp(fragment) into fragdudefp2  from rik.fragdude ;
-    
-    select a.fragment, b.fragment, oc.tanimoto(a.fp,b.fp)
-    from rik.fragdudefp2 a, rik.fragdudefp2 b 
-    where (oc.nbits_set(a.fp & ~b.fp) + 
-           oc.nbits_set(b.fp & ~a.fp) +
-           oc.nbits_set(a.fp & b.fp)) > 0;
-       
-    meaning ALL pairs listed!
-    '''
-    
-    ## first pass: get all fragments
-    fragKeys = defaultdict(int)
-    reader = csv.DictReader(open(inf))
-    for i,entry in enumerate(reader):
-        # fragment1,fragment2,tanimoto
-        frag1 = entry['fragment1']
-        frag2 = entry['fragment2']
-        if frag1==frag2:
-            continue
-        fragKeys[frag1] += 1
-        fragKeys[frag2] += 1
-        
-    allFrag = fragKeys.keys()
-    allFrag.sort()
-    
-    # 2do: change to test/assert
-    
-    # NB: two comparisons not including self
-    for frag in allFrag:
-        if fragKeys[frag] != 2 * (len(allFrag) -1):
-            print 'loadFragSim: odd number of comparisons?!',frag
-    
-    ## 2d pass: only include upper diagonal
-    fragSim = defaultdict( lambda: defaultdict(float) )
-    reader = csv.DictReader(open(inf))
-    for i,entry in enumerate(reader):
-        # fragment1,fragment2,tanimoto
-        frag1 = entry['fragment1']
-        frag2 = entry['fragment2']
-     
-        fidx1 = allFrag.index(frag1)
-        fidx2 = allFrag.index(frag2)
-        # only include upper diagonal
-        if fidx1 > fidx2:
-            continue
-        
-        fragSim[frag1][frag2] = float(entry['tanimoto'])
-        
-    print 'loadFragSim: NFrag=%d' % (len(allFrag))
-    return fragSim
- 
-def bldfragDistArr(fragDistDict):
-    '''produce numpy array of fragment distances
-    '''
-
-    allFrag = fragDistDict.keys()
-    allFrag.sort()
-    nfrag = len(allFrag)
-
-    ## NB: allLig and allRLIF sorted above!
-    spCov = dok_matrix((nfrag,nfrag), dtype=np.float)
-    for fi,frag1 in enumerate(allFrag):
-        for fj,frag2 in enumerate(fragDistDict[frag1].keys()):
-                spCov[fi,fj] = fragDistDict[frag1][frag2]
-
-    nnz1 = spCov.nnz
-    if nnz1==0:
-        print 'bldfragArray: nnz1==zero!?'
-        return None
-
-    # print 'bldfragArray: NNZ1=%d converting dok -> csr...' % (nnz1)
-    spCov = spCov.tocsr()
-    nnz2 = spCov.nnz
-    if nnz2==0:
-        print 'bldfragArray: nnz2==zero!?'
-        return None
-
-    # print 'bldfragArray: NNZ2=%d making dense...' % (nnz2)
-    denseCov = spCov.toarray()
-    nnz3 = np.count_nonzero(denseCov)
-    if nnz3==0:
-        print 'bldfragArray: nnz3==zero!?'
-        return None
-    # print 'bldfragArray: NNZ3=%d' % (nnz3)
-
-    return denseCov
-    
-def splitRecap(allRecapf,canonDir):        
-    '''utility to split allRecapf into individual experiment recap files 
-    after processing via database recap
-    '''
-    
-    assert False, '2do NEXT!'
-    ins = open(allRecapf)
-    prevExpt = None
-    outs = None
-    # 2do HACK: don't bother to break lines up into fields with csv.DictReader
-    for il,line in enumerate(ins.readlines()):
-        # Expt,ZINCID,Batch,E,CanonSmiles
-        cpos = line.find(',')
-        exptName = line[:cpos]
-        if prevExpt:
-            outs.close()
-            outs = open(canonDir+exptName+'_recap.csv','w')
-            outs.write('ZINCID,Batch,E,CanonSmiles\n')
-
-
-def bldFragClusterFile(fragSimf,outf,simThresh=0.5,distThresh=0.5):
-    '''cluster fragments using fastcluster and DISTANCE flattening
-    built from FILE
-    '''
-
-    def getCenter(fragList):
-        '''identify ~centroid of fragment list
-        calculate cummSim for each frag1 wrt/ all other frag2
-        '''
-        
-        if len(fragList)==1:
-            return fragList[0]
-        
-        fragList.sort()
-        maxSim = 0
-        bestFrag = None
-        nsim = 0
-        fragList.sort()
-        tot2 = 0
-        for frag1 in fragList:
-            tot = 0
-            for frag2 in fragList:
-                if frag2 == frag1:
-                    continue
-                nsim += 1
-                sim = fragTbl[frag1][frag2]
-                tot += sim
-            if tot > maxSim:
-                maxSim = tot
-                bestFrag = frag1
-            tot2 += tot
-            
-        if bestFrag==None:
-            print 'getCenter: all sim==0.?!'
-            # arbitrarily pick first frag
-            bestFrag = fragList[0]
-                
-#         print 'getCenter: NFrag=%d NSim=%d bestAvgSim=%f AvgSim=%f' % \
-#             (nfrag,nsim,maxSim/(nfrag-1),tot2/nsim)
-
-        return bestFrag
-
-    fragTbl = defaultdict( lambda: defaultdict(float) ) # frag1 -> frag2 -> tsim
-    fragSet = set()
-    reader = csv.DictReader(open(fragSimf))
-    
-    for i,entry in enumerate(reader):
-        # Frag1,Frag2,Sim
-        frag1 = entry['Frag1']
-        frag2 = entry['Frag2']
-        fragSet.add(frag1)
-        fragSet.add(frag2)
-        if frag1==frag2:
-            continue
-        sim = float(entry['Sim'])
-        if sim > simThresh:
-            fragTbl[frag1][frag2]= sim
-            # NB: symmetric entries in fragTbl used by getCenter()
-            fragTbl[frag2][frag1]= sim
-            
-        
-
-    # http://danifold.net/fastcluster.html
-    # The argument X is either a compressed distance matrix or a collection of 
-    # N observation vectors in D dimensions as an (N x D) array. 
-    # Apart from the argument preserve_input, the methods have the same input 
-    # and output as the functions of the same name in the package scipy.cluster.hierarchy. 
-    # Therefore, I do not duplicate the documentation and refer to the SciPy documentation 
-    # http://docs.scipy.org/doc/scipy/reference/cluster.hierarchy.html and 
-    # http://docs.scipy.org/doc/scipy/reference/generated/scipy.cluster.hierarchy.linkage.html for 
-    # further details.   
-          
-    allFrag = list(fragSet)
-    nfrag = len(allFrag)
-    allFrag.sort()
-    fragIdxTbl = {}
-
-    fragDistArr = np.ones((nfrag,nfrag))
-    for fi, frag in enumerate(allFrag):
-        fragIdxTbl[frag] = fi
-        fragDistArr[fi,fi] = 0.
-    
-    nnonz = 0
-    
-    for frag1 in fragTbl.keys():
-        fidx1 = fragIdxTbl[frag1]
-        # self-distance = zero
-        for frag2 in fragTbl[frag1].keys():
-            fidx2 = fragIdxTbl[frag2]
-            sim = fragTbl[frag1][frag2]
-            # NB: convert to DISTANCE
-            dist = 1. - sim
-            fragDistArr[fidx1,fidx2] = dist
-            # NB: need to redundantly put both symmetric distances or squareform() bitches
-            fragDistArr[fidx2,fidx1] = dist
-            nnonz += 1
-    sparsity = nnonz / (nfrag*(nfrag-1)/2.)
-    nnonz2 = np.count_nonzero(fragDistArr)
-
-    distVec = distance.squareform(fragDistArr)
-    maxDist = max(distVec)
-    
-    print 'bldFragClusterFile: NFragment = %d NNonZero=%d (sparsity=%f) maxDist=%f' % (nfrag,nnonz,sparsity,maxDist)
-
-    ## using sklearn KMeans
-#     km = sklearn.cluster.KMeans(n_clusters=nclust)
-#     km.fit(fragArr)
-#     labels = km.labels_
-#     centroids = km.cluster_centers_
-    
-    clustering = fastcluster.linkage(distVec,method='ward')
-    # NB: sch.linkage doesn't support Ward method when "raw" observations not available
-    # clustering = sch.linkage(distVec,method='average')
-    
-#     flatClust_n = sch.fcluster(clustering, nclust, 'maxclust')
-#     flatClust_d = sch.fcluster(clustering, 0.5*maxDist, 'distance')
-#     flatClust_i = sch.fcluster(clustering, 0.5, 'inconsistent')
-#     flatClust = flatClust_n
-
-#     if flatIdx == 'nclust':
-#         flatClustOpt = [nclust, 'maxclust']
-#     elif flatIdx == 'dist':
-#         flatClustOpt = [0.1, 'distance'] # simThresh/4
-#     elif flatIdx == 'incon':
-#         flatClustOpt = [0.5, 'inconsistent']
-#           
-#     flatClust = sch.fcluster(clustering, flatClustOpt[0], flatClustOpt[1])
-
-    flatClust = sch.fcluster(clustering, distThresh, 'distance')
-    
-    # clustRoot,clustTree = sch.to_tree(clustering, rd=True)
-    
-    # 2do:  better way to get most-central fragment for each cluster?
-    # http://stackoverflow.com/questions/9362304/how-to-get-centroids-from-scipys-hierarchical-agglomerative-clustering
-    
-    clustTbl = defaultdict(list) # clustID -> [fragments]
-    for fragIdx,cidx in enumerate(flatClust):
-        clustTbl[cidx].append(allFrag[fragIdx])
-    
-    clustIndices = clustTbl.keys()
-    print 'bldFragClusterFile: NClust found=%d' % (len(clustIndices))
-    
-    cliqueSizes = [len(clustTbl[c]) for c in clustTbl]
-    print 'bldFragClusterFile: NClique=%d %s' % (len(clustTbl),cliqueSizes)
-
-    clustIndices.sort()
-    centralFrag = {} # clusterIdx -> most central frag
-    for cidx in clustIndices:
-        ctrFrag = getCenter(clustTbl[cidx])
-        centralFrag[cidx] = ctrFrag    
-
-    outs = open(outf,'w')
-    outs.write('Clique,IsCenter,Fragment\n')
-                                 
-    for cidx in clustIndices:
-        for frag in clustTbl[cidx]:
-            isCenter = (frag==centralFrag[cidx])
-            outs.write('%d,%d,%s\n' % (cidx,isCenter,frag))    
-    outs.close() 
 
 def bldFragClusters(fragSimTbl,simThresh=0.7,distThresh=0.5):
     '''cluster fragments using fastcluster and DISTANCE flattening
@@ -3783,6 +2689,143 @@ def tstDockFile(ligTbl,exptName,verbose=False):
             
     print 'tstDock: %s Nerr=%d/%d' % (exptName,nerr,len(ligTbl))
 
+def fauxMain(verbose=False):
+    '''faux-toplevel routine, pulling major calls together
+    for profiling, pycallgraph
+    '''
+    
+    begTime = datetime.datetime.now()
+    begTimeStr = begTime.strftime('%y%m%d_%H%M%S')
+    
+    # 0
+    print 'analFAAH: *PHASE 0: building exptTbl'
+
+    ExptFile = SummRptDir+'exptBatch.csv'
+    exptTbl0 = bldExptTbl(ExptFile)
+    exptTbl = analFAAH_expt(exptTbl0,None,CrawlDir,SummRptDir,frac4Thresh=1.0,ncand=100)
+    # NB: needed for evalClassif
+    exptTblPkl1 = SummRptDir+'exptTblU_v1.pkl'
+    cPickle.dump(exptTbl, open(exptTblPkl1,'wb'))
+        
+    # 1
+    print 'analFAAH: *PHASE 1: building RLIF'
+    analBestRLIF(exptTbl,CrawlDir,SummRptDir)
+
+    allExpt = exptTbl.keys()
+    allExpt.sort()
+    expt0 = allExpt[0]
+    exptNo,prot,recept,site,lib = expt0
+    exptName = bldExptStr(expt0) 
+    
+    # 1.1
+    print 'analFAAH: *PHASE 1-1: compute HIF'
+    batchList = ranges2list( [(exptTbl[expt0]['bstart'],exptTbl[expt0]['bend'])] )
+    frac4Thresh = 0.02
+    ncand = 1000
+    dcrit='energy'
+    faahDir = CrawlDir + 'Exp%s/' % (exptNo)
+    thresh, bestCandThresh = getThresh(expt0,config.RunType,batchList,faahDir,frac4Thresh,ncand,dcrit)
+     
+    hifFile = HIFDir+('%s_hif.csv' % (exptName))
+    if os.path.exists(hifFile):
+        print 'analFAAH Phase 1-1: HIF already exist',exptName
+    else:
+        analBldHIFeatures(faahDir,exptName,batchList,thresh,hifFile)
+
+    config.BindPPFile = L2FDir + exptName + '_lig2fragPP.txt'
+    config.DropLigFile = SummRptDir + exptName + '_droppedLig.csv'
+    dls = open(config.DropLigFile,'w')
+    dls.write('ZINCID,Reason\n')
+    dls.close()
+    
+    lowef = LowEDir+ exptName + '_lowE.csv'
+    ligTbl, batch2ligTbl = loadBestLig(exptName,lowef)
+
+    # 2
+    begTime = datetime.datetime.now()
+    begTimeStr = begTime.strftime('%y%m%d_%H%M%S')
+    print 'analFAAH: *PHASE 2: compute lig2frag'
+    print '<analFAAH_2 %s %s>' % (exptName,begTimeStr)
+    
+    L2FPickleFile =   L2FDir + exptName + '_lig2Frag.pkl'
+    if os.path.exists(L2FPickleFile):
+        print 'analFAAH_2: %s L2F pkl exist; loading' % (exptName)
+        l2fTbl = cPickle.load(open(L2FPickleFile,'rb'))
+    else:
+        l2fTbl = bldLig2frag(ligTbl,exptName,verbose=verbose)
+        cPickle.dump(l2fTbl, open(L2FPickleFile,'wb'))
+            
+    # 3
+    print 'analFAAH: *PHASE 3: build bldRLIF2frag'
+    R2FPickleFile =   R2FDir + exptName + '_rlif2frag.pkl'
+    if os.path.exists(R2FPickleFile):
+        print 'R2FPickleFile exists; using',R2FPickleFile
+        r2fTbl = cPickle.load(open(R2FPickleFile,'rb')) # RLIF -> frag -> [ (zincid,fragIdx) ]
+    else:
+        begTime = datetime.datetime.now()
+        begTimeStr = begTime.strftime('%y%m%d_%H%M%S')
+        print '<analFAAH_3  %s %s>' % (exptName,begTimeStr)
+        print 'analFAAH_3: Exp=%s: NLig=%d' % (exptName,len(ligTbl))
+        bstart = exptTbl[expt0]['bstart']
+        bend = exptTbl[expt0]['bend']
+        errf = R2FDir + exptName + '_r2f_err.txt'
+        r2fTbl = bldRLIF2frag(exptName,ligTbl,l2fTbl,errf,None,bstart,bend,verbose=verbose) # RLIF -> frag -> [ (zincid,fragIdx,latomFull,fragInfo) ]
+        cPickle.dump(r2fTbl, open(R2FPickleFile,'wb'))
+    
+    # 4
+    print 'analFAAH: *PHASE 4: capture ligand atom coordinates associated w/ RLIF'
+    LigCoordPickleFile =   LigCoordDir + exptName + '_ligCoord.pkl'
+    if os.path.exists(LigCoordPickleFile):
+        print 'analFAAH Phase 4: ligCoord already exist',exptName
+        ligCoordTbl = cPickle.load(open(LigCoordPickleFile,'rb'))
+    else:
+        begTime = datetime.datetime.now()
+        begTimeStr = begTime.strftime('%y%m%d_%H%M%S')
+        print '<analFAAH_4  %s %s>' % (exptName,begTimeStr)
+        print 'analFAAH_4: Exp="%s": NLig=%d' % (exptName,len(ligTbl))  
+        ligCoordTbl = bldLigCoordFromPDBQT(exptName,r2fTbl,ligTbl)
+        cPickle.dump(ligCoordTbl, open(LigCoordPickleFile,'wb'))
+
+    # 5
+    print 'analFAAH: *PHASE 5: bldR2FCtr'
+    R2FCPickleFile = R2FCDir + exptName + '_r2fc.pkl'    
+    if os.path.exists(R2FCPickleFile):
+        print 'analFAAH Phase 5: fragClust already exist',exptName
+        r2fcTbl = cPickle.load(open(R2FCPickleFile,'rb'))
+    else:
+        begTime = datetime.datetime.now()
+        begTimeStr = begTime.strftime('%y%m%d_%H%M%S')
+        print '<analFAAH_5  %s %s>' % (exptName,begTimeStr)
+        print 'analFAAH_5: Exp="%s": NLig=%d' % (exptName,len(ligTbl))
+        r2fcfile = R2FCDir + exptName + '_r2fc.csv'
+        # NB: bldR2FCtr() is slow; give verbose output
+        r2fcTbl = bldR2FCtr(exptName,r2fTbl,ligTbl,r2fcfile,verbose=True)
+        cPickle.dump(r2fcTbl, open(R2FCPickleFile,'wb'))
+    
+    # 6
+    print 'analFAAH: *PHASE 6: build ARFF'
+    
+    arrffFile = ArffDir+('%s.arff' % (exptName))
+    if os.path.exists(arrffFile):
+        print 'analFAAH_6: arrf already exist',exptName
+    else:
+        begTime = datetime.datetime.now()
+        begTimeStr = begTime.strftime('%y%m%d_%H%M%S')
+        print '<analFAAH_6  %s %s>' % (exptName,begTimeStr)
+        activeFile = ActiveDir + ActiveNameTbl[exptName]+'.lst'
+        ins = open(activeFile)
+        activeLigIdx = []
+        for line in ins.readlines():
+            lig = line.strip()
+            activeLigIdx.append(normLigand(lig))
+        ins.close()
+        activeIdxSet = set(activeLigIdx)
+    
+        lig2SpArff(exptName,ligTbl,r2fcTbl,ligCoordTbl,activeIdxSet)
+    
+    timeRptFile = SummRptDir + 'fileTimes.csv'
+    collectTimes(exptTbl,timeRptFile)
+    
 ### top-level run commands
 if __name__ == '__main__':
 
@@ -3806,7 +2849,7 @@ if __name__ == '__main__':
         import pybel
         ob = pybel.ob
         import recap3 as recap
-        import fastcluster  # only when using bldFragClusters()
+        import fastcluster  
 
     elif HostName.startswith('mjq'):
         print 'running local on mjq'
@@ -3814,12 +2857,14 @@ if __name__ == '__main__':
 
         import pybel
         ob = pybel.ob
+        import recap3 as recap
+        import fastcluster  
 
     else:
         print 
         sys.exit( ('unknown host %s' % (HostName)) )
-
-    config.RunName = 'DUDE_151005' # 'IN-LEDGF' 'SAMPL4' 'DUDE' 'focusedLib' 'SAMPL4' 
+    
+    config.RunName = 'DUDE_TEST' # 'IN-LEDGF' 'SAMPL4' 'DUDE' 'focusedLib' 'SAMPL4' 
 
     ProcDir = BaseDir + 'processed/%s/'  % (config.RunName)
     
@@ -3827,14 +2872,14 @@ if __name__ == '__main__':
         
     SummRptDir = BaseDir + 'anal/%s/'  % (config.RunName)
 
-    RunType = 'ADV'
-    FeatureType = 'RLIF' # 'sampl' 'HIF'
-    ADFeatures = 'binary' # 'wvdw' 'binary'
-    HIFLevel =  'Full' # vs 'PosOnlyHIF' vs. 'ROnlyHIF' vs 'Full'
+    ExptFile = SummRptDir+'exptBatch-RO.csv'
 
-    Exp47_LigandName_Hack = False
+    config.RunType = 'ADV'
+    config.FeatureType = 'RLIF' # 'sampl' 'HIF'
+    config.ADFeatures = 'binary' # 'wvdw' 'binary'
+    config.HIFLevel =  'Full' # vs 'PosOnlyHIF' vs. 'ROnlyHIF' vs 'Full'
 
-    ExptFile = SummRptDir+'exptBatch.csv'
+    config.Exp47_LigandName_Hack = False
 
     FocalExpts = None 
 
@@ -3842,16 +2887,14 @@ if __name__ == '__main__':
     AChainOnly=False
     RLIFLevel = 'PAIatom'  # 'PAI' vs. 'PAIset' vs 'PAIatom'
 
-    HIFLevel =  'Full' # 'PosOnlyHIF' vs. ROnlyHIF' vs 'Full'
-
-    if FeatureType == 'RLIF':
-        FeatLbl = 'R_%s_%s' % (ADFeatures[0],RLIFLevel[3])
-    elif FeatureType == 'HIF':
-        FeatLbl = 'H_%s_%s' % (ADFeatures[0],HIFLevel[0],HIFLevel[0])
-    elif FeatureType == 'sampl':
-        FeatLbl = '%s_%s_%s' % (FeatureType[0],ADFeatures[0].upper(),HIFLevel[0])
+    if config.FeatureType == 'RLIF':
+        FeatLbl = 'R_%s_%s' % (config.ADFeatures[0],RLIFLevel[3])
+    elif config.FeatureType == 'HIF':
+        FeatLbl = 'H_%s_%s' % (config.ADFeatures[0],config.HIFLevel[0],config.HIFLevel[0])
+    elif config.FeatureType == 'sampl':
+        FeatLbl = '%s_%s_%s' % (config.FeatureType[0],config.ADFeatures[0].upper(),config.HIFLevel[0])
     else:
-        sys.exit( ('unknown FeatureType?! %s' % (FeatureType)) )
+        sys.exit( ('unknown FeatureType?! %s' % (config.FeatureType)) )
         
     NBestLig = None
     LigPathTbl = None
@@ -3871,7 +2914,7 @@ if __name__ == '__main__':
     
     if config.RunName.startswith('DUDE'):
         
-        ProcDir = BaseDir + 'processed/DUDE/'
+        ProcDir = BaseDir + 'processed/DUDE_v1/'
         if HostName.startswith('hancock') or HostName.startswith('mjq'):
             CrawlDir = BaseDir + 'crawl/DUDE/'
         
@@ -3908,8 +2951,8 @@ if __name__ == '__main__':
     
     print '<analFAAH config.RunName=%s begTime=%s>' % (config.RunName,datetime.datetime.now().strftime('%y%m%d_%H%M%S'))
     print '\thost=%s\n\tWCGData=%s\n\tsummRpt=%s\n' % (HostName, CrawlDir, SummRptDir)
-    print '\texptFile=%s\n\texptList=%s\n\trunType=%s\n\tfeatureType=%s' % (ExptFile,FocalExpts,RunType,FeatureType)
-    print '\tADFeatures=%s\n\tHIFLevel=%s\n\tFeatLbl=%s\n' % (ADFeatures,HIFLevel,FeatLbl)
+    print '\texptFile=%s\n\texptList=%s\n\trunType=%s\n\tfeatureType=%s' % (ExptFile,FocalExpts,config.RunType,config.FeatureType)
+    print '\tADFeatures=%s\n\tHIFLevel=%s\n\tFeatLbl=%s\n' % (config.ADFeatures,config.HIFLevel,FeatLbl)
     print '\tNBestLig=%s\n' % (NBestLig)
 
     ############################################################
@@ -3927,7 +2970,11 @@ if __name__ == '__main__':
     PlotDir = SummRptDir + 'plots/'
     ArffDir = SummRptDir+'ARFF/'
     HIFDir = SummRptDir+'HIF/'
+    
+    # NB: need to set PlotDir in config so plot.py() knows about it
+    config.PlotDir = PlotDir
 
+# 2do ASAP: Convert all the  os.path.exists() checks to MEMOIZATION decorators!
 
 # #     ############################################################
      
@@ -4027,7 +3074,7 @@ if __name__ == '__main__':
         ncand = 1000
         dcrit='energy'
         
-        thresh, bestCandThresh = getThresh(expt,RunType,batchList,faahDir,frac4Thresh,ncand,dcrit)
+        thresh, bestCandThresh = getThresh(expt,config.RunType,batchList,faahDir,frac4Thresh,ncand,dcrit)
         
         analBldHIFeatures(faahDir,exptName,batchList,thresh,hifFile)
 
@@ -4044,6 +3091,11 @@ if __name__ == '__main__':
         exptNo,prot,recept,site,lib = expt
         exptName = bldExptStr(expt)
   
+        config.DropLigFile = SummRptDir + exptName + '_droppedLig.csv'
+        dls = open(config.DropLigFile,'w')
+        dls.write('ZINCID,Reason\n')
+        dls.close()
+
         L2FPickleFile =   L2FDir + exptName + '_lig2Frag.pkl'
         if os.path.exists(L2FPickleFile):
             print 'analFAAH_2: %s L2F pkl exist; skipping' % (exptName)
@@ -4053,36 +3105,15 @@ if __name__ == '__main__':
         begTimeStr = begTime.strftime('%y%m%d_%H%M%S')
   
         print '<analFAAH_2 %s %s>' % (exptName,begTimeStr)
-            
-        ## NonZincLigTbl is experiment-specific
-        ## needs to be kept for reloading along with pickeled
-        config.NonZincLigTbl = {} # ligand name -> nonzincID 
-        config.NZIdx2LigTbl = {} # nonzincID -> ligand name
-        config.NNonZincLig = 0
-        if config.RunName.startswith('DUDE'):
-            nonzf = LowEDir + '%s_nonZincLig.csv' % (exptName)
-        else:
-            nonzf = LowEDir + 'nonZincLig.csv'
-        if os.path.exists(nonzf):
-            # cf. analFAAH_expt()
-            reader = csv.DictReader(open(nonzf))
-            for i,entry in enumerate(reader):
-                # Ligand,NZIdx
-                config.NonZincLigTbl[ entry['Ligand'] ] = int(entry['NZIdx'])
-                config.NZIdx2LigTbl [ int(entry['NZIdx']) ] =  entry['Ligand']
-            config.NNonZincLig = len(config.NonZincLigTbl)
-            print 'analFAAH_2: %d NonZincLig loaded from %s' % (config.NNonZincLig,nonzf)
-        else:
-            print 'analFAAH_2: no NonZincLig',exptName
-    
+                
         lowef = LowEDir+ exptName + '_lowE.csv'
         # NB: full set of ligands need to be fragmented for classification testing
         if NBestLig == None or (config.RunName.startswith('DUDE') or config.RunName.startswith('SAMPL4')):
-            ligTbl, batch2ligTbl = loadBestLig(lowef)
+            ligTbl, batch2ligTbl = loadBestLig(exptName,lowef)
         else:
-            ligTbl, batch2ligTbl = loadBestLig(lowef,maxLig=NBestLig)
+            ligTbl, batch2ligTbl = loadBestLig(exptName,lowef,maxLig=NBestLig)
                                 
-        BindPPFile = L2FDir + exptName + '_lig2fragPP.txt'
+        config.BindPPFile = L2FDir + exptName + '_lig2fragPP.txt'
     
         # tstDock(ligTbl,exptName)
         
@@ -4095,7 +3126,7 @@ if __name__ == '__main__':
                   
     ############################################################
   
-    print 'analFAAH: *Phase 3: build bldRLIF2frag'
+    print 'analFAAH: *PHASE 3: build bldRLIF2frag'
     
     if not os.path.isdir(R2FDir):
         print 'analFAAH_3: creating RLIF2F directory',R2FDir
@@ -4116,32 +3147,11 @@ if __name__ == '__main__':
         begTimeStr = begTime.strftime('%y%m%d_%H%M%S')
         print '<analFAAH_3  %s %s>' % (exptName,begTimeStr)
                 
-        ## NonZincLigTbl is experiment-specific
-        ## needs to be kept for reloading along with pickeled
-        config.NonZincLigTbl = {} # ligand name -> nonzincID 
-        config.NZIdx2LigTbl = {} # nonzincID -> ligand name
-        config.NNonZincLig = 0
-        if config.RunName.startswith('DUDE'):
-            nonzf = LowEDir + '%s_nonZincLig.csv' % (exptName)
-        else:
-            nonzf = LowEDir + 'nonZincLig.csv'
-        if os.path.exists(nonzf):
-            # cf. analFAAH_expt()
-            reader = csv.DictReader(open(nonzf))
-            for i,entry in enumerate(reader):
-                # Ligand,NZIdx
-                config.NonZincLigTbl[ entry['Ligand'] ] = int(entry['NZIdx'])
-                config.NZIdx2LigTbl [ int(entry['NZIdx']) ] =  entry['Ligand']
-            config.NNonZincLig = len(config.NonZincLigTbl)
-            print 'analFAAH_3: %d NonZincLig loaded from %s' % (config.NNonZincLig,nonzf)
-        else:
-            print 'analFAAH_3: no NonZincLig',exptName
-        
         lowef = LowEDir+ exptName + '_lowE.csv'
         if NBestLig == None:
-            ligTbl, batch2ligTbl = loadBestLig(lowef)
+            ligTbl, batch2ligTbl = loadBestLig(exptName,lowef)
         else:
-            ligTbl, batch2ligTbl = loadBestLig(lowef,maxLig=NBestLig)
+            ligTbl, batch2ligTbl = loadBestLig(exptName,lowef,maxLig=NBestLig)
     
         print 'analFAAH_3: Exp=%s: NLig=%d' % (exptName,len(ligTbl))
        
@@ -4157,7 +3167,7 @@ if __name__ == '__main__':
         bend = exptTbl[expt]['bend']
   
         print 'R2FPickleFile not found, building...',R2FPickleFile
-        errf = R2FDir + exptName + 'r2f_err.txt'
+        errf = R2FDir + exptName + '_r2f_err.txt'
         r2fTbl = bldRLIF2frag(exptName,ligTbl,l2fTbl,errf,LigPathTbl,bstart,bend) # RLIF -> frag -> [ (zincid,fragIdx,latomFull,fragInfo) ]
                              
         print 'R2FPickleFile dumping to',R2FPickleFile
@@ -4186,33 +3196,12 @@ if __name__ == '__main__':
         if os.path.exists(LigCoordPickleFile):
             print 'analFAAH_4: ligCoord.pkl already exists',exptName
             continue
-            
-        ## NonZincLigTbl is experiment-specific
-        ## needs to be kept for reloading along with pickeled
-        config.NonZincLigTbl = {} # ligand name -> nonzincID 
-        config.NZIdx2LigTbl = {} # nonzincID -> ligand name
-        config.NNonZincLig = 0
-        if config.RunName.startswith('DUDE'):
-            nonzf = LowEDir + '%s_nonZincLig.csv' % (exptName)
-        else:
-            nonzf = LowEDir + 'nonZincLig.csv'
-        if os.path.exists(nonzf):
-            # cf. analFAAH_expt()
-            reader = csv.DictReader(open(nonzf))
-            for i,entry in enumerate(reader):
-                # Ligand,NZIdx
-                config.NonZincLigTbl[ entry['Ligand'] ] = int(entry['NZIdx'])
-                config.NZIdx2LigTbl [ int(entry['NZIdx']) ] =  entry['Ligand']
-            config.NNonZincLig = len(config.NonZincLigTbl)
-            print 'analFAAH_4: %d NonZincLig loaded from %s' % (config.NNonZincLig,nonzf)
-        else:
-            print 'analFAAH_4: no NonZincLig',exptName
-      
+                  
         lowef = LowEDir+ exptName + '_lowE.csv'
         if NBestLig == None:
-            ligTbl, batch2ligTbl = loadBestLig(lowef)
+            ligTbl, batch2ligTbl = loadBestLig(exptName,lowef)
         else:
-            ligTbl, batch2ligTbl = loadBestLig(lowef,maxLig=NBestLig)
+            ligTbl, batch2ligTbl = loadBestLig(exptName,lowef,maxLig=NBestLig)
     
         R2FPickleFile = R2FDir + exptName + '_rlif2frag.pkl'
         r2fTbl = cPickle.load(open(R2FPickleFile,'rb')) # RLIF -> frag -> [ (zincid,fragIdx) ]
@@ -4225,16 +3214,12 @@ if __name__ == '__main__':
     
 #     ############################################################
      
-    print 'analFAAH: *PHASE 5: bldR2FCtr_v2'
+    print 'analFAAH: *PHASE 5: bldR2FCtr'
          
     if not os.path.isdir(R2FCDir):
         print 'analFAAH_5: creating R2FCDir directory',R2FCDir
         os.makedirs(R2FCDir)
-         
-#     if not os.path.isdir(PlotDir):
-#         print 'analFAAH_5: creating PlotDir directory',PlotDir
-#         os.makedirs(PlotDir)
-     
+              
     for expt in allExpt:
       
         exptName = bldExptStr(expt)
@@ -4258,38 +3243,17 @@ if __name__ == '__main__':
          
         R2FPickleFile = R2FDir + exptName + '_rlif2frag.pkl'
         r2fTbl = cPickle.load(open(R2FPickleFile,'rb')) # RLIF -> frag -> [ (zincid,fragIdx,latomFull,fragInfo) ]
-     
-        ## NonZincLigTbl is experiment-specific
-        ## needs to be kept for reloading along with pickeled
-        config.NonZincLigTbl = {} # ligand name -> nonzincID 
-        config.NZIdx2LigTbl = {} # nonzincID -> ligand name
-        config.NNonZincLig = 0
-        if config.RunName.startswith('DUDE'):
-            nonzf = LowEDir + '%s_nonZincLig.csv' % (exptName)
-        else:
-            nonzf = LowEDir + 'nonZincLig.csv'
-        if os.path.exists(nonzf):
-            # cf. analFAAH_expt()
-            reader = csv.DictReader(open(nonzf))
-            for i,entry in enumerate(reader):
-                # Ligand,NZIdx
-                config.NonZincLigTbl[ entry['Ligand'] ] = int(entry['NZIdx'])
-                config.NZIdx2LigTbl [ int(entry['NZIdx']) ] =  entry['Ligand']
-            config.NNonZincLig = len(config.NonZincLigTbl)
-            print 'analFAAH_5: %d NonZincLig loaded from %s' % (config.NNonZincLig,nonzf)
-        else:
-            print 'analFAAH_5: no NonZincLig',exptName
-             
+                  
         lowef = LowEDir+ exptName + '_lowE.csv'
         if NBestLig == None:
-            ligTbl, batch2ligTbl = loadBestLig(lowef)
+            ligTbl, batch2ligTbl = loadBestLig(exptName,lowef)
         else:
-            ligTbl, batch2ligTbl = loadBestLig(lowef,maxLig=NBestLig)
+            ligTbl, batch2ligTbl = loadBestLig(exptName,lowef,maxLig=NBestLig)
      
         print 'analFAAH_5: Exp="%s": NLig=%d' % (exptName,len(ligTbl))
      
         r2fcfile = R2FCDir + exptName + '_r2fc.csv'
-        r2fcTbl = bldR2FCtr_v2(exptName,r2fTbl,ligTbl,r2fcfile)
+        r2fcTbl = bldR2FCtr(exptName,r2fTbl,ligTbl,r2fcfile)
            
         cPickle.dump(r2fcTbl, open(R2FCPickleFile,'wb'))
    
@@ -4335,10 +3299,11 @@ if __name__ == '__main__':
     if not os.path.isdir(ArffDir):
         print 'analFAAH_6: creating ArffDir directory',ArffDir
         os.makedirs(ArffDir)
- 
-    if not os.path.isdir(PlotDir):
-        print 'analFAAH_6: creating PlotDir directory',PlotDir
-        os.makedirs(PlotDir)
+
+    # NB: need to set PlotDir in config so plot.py() knows about it
+    if not os.path.isdir(config.PlotDir):
+        print 'analFAAH_6: creating PlotDir directory', config.PlotDir
+        os.makedirs(config.PlotDir)
      
     allExpt = exptTbl.keys()
     allExpt.sort()
@@ -4356,26 +3321,14 @@ if __name__ == '__main__':
             print 'analFAAH_6: arrf already exist',exptName
             continue
                            
+        lowef = LowEDir+ exptName + '_lowE.csv'
+        if NBestLig == None:
+            ligTbl, batch2ligTbl = loadBestLig(exptName,lowef)
+        else:
+            ligTbl, batch2ligTbl = loadBestLig(exptName,lowef,maxLig=NBestLig)
+           
         if config.RunName.startswith('DUDE'):
-             
-            ## NonZincLigTbl is experiment-specific
-            ## needs to be kept for reloading along with pickeled
-            config.NonZincLigTbl = {} # ligand name -> nonzincID 
-            config.NZIdx2LigTbl = {} # nonzincID -> ligand name
-            config.NNonZincLig = 0
-            nonzf = LowEDir + '%s_nonZincLig.csv' % (exptName)
-            # cf. analFAAH_expt()
-            if os.path.exists(nonzf):
-                reader = csv.DictReader(open(nonzf))
-                for i,entry in enumerate(reader):
-                    # Ligand,NZIdx
-                    config.NonZincLigTbl[ entry['Ligand'] ] = int(entry['NZIdx'])
-                    config.NZIdx2LigTbl [ int(entry['NZIdx']) ] =  entry['Ligand']
-                config.NNonZincLig = len(config.NonZincLigTbl)
-                print 'analFAAH_6: %d NonZincLig loaded from %s' % (config.NNonZincLig,nonzf)
-            else:
-                print 'analFAAH_6: no NonZincLig',exptName
-                 
+                              
             activeFile = ActiveDir + ActiveNameTbl[exptName]+'.lst'
             ins = open(activeFile)
             activeLigIdx = []
@@ -4385,28 +3338,25 @@ if __name__ == '__main__':
             ins.close()
             activeIdxSet = set(activeLigIdx)
             print 'analFAAH_6: DUDE %s NonZinc=%d NActive=%d' % (exptName,config.NNonZincLig,len(activeIdxSet))
-  
-        lowef = LowEDir+ exptName + '_lowE.csv'
-        if NBestLig == None:
-            ligTbl, batch2ligTbl = loadBestLig(lowef)
-        else:
-            ligTbl, batch2ligTbl = loadBestLig(lowef,maxLig=NBestLig)
-           
-        cummTrueMaxE, fracNeg = analTrueEnergy(ProcDir, PlotDir, exptName, ligTbl, activeIdxSet)
+
+        cummTrueMaxE, fracNeg = analTrueEnergy(ProcDir, exptName, ligTbl, activeIdxSet)
         print 'analFAAH_6: DUDE %s cummTrueMaxE=%f FracNeg=%f (%d)' % \
             (exptName,cummTrueMaxE,fracNeg,fracNeg*len(ligTbl))
-          
+            
         R2FCPickleFile = R2FCDir + exptName + '_r2fc.pkl'
         r2fcTbl = cPickle.load(open(R2FCPickleFile,'rb'))
-        # NB: only use ethresh on biggest runs
-        if len(ligTbl) > 20000:
-            # don't write dense ARFF
-            # ligRFC2arff(exptName,activeIdxSet,ethresh=cummTrueMaxE)
-            ligRFC2SpArff(exptName,r2fcTbl,activeIdxSet,ethresh=cummTrueMaxE)
-        else:
-            # don't write dense ARFF
-            # ligRFC2arff(exptName,activeIdxSet)
-            ligRFC2SpArff(exptName,r2fcTbl,activeIdxSet)
+        
+        lcFile = LigCoordDir + '%s_ligCoord.pkl' % (exptName)
+        print 'Loading ligCoordPickle...',lcFile
+        ligCoordTbl = cPickle.load(open(lcFile,'rb'))
+
+        # don't write dense ARFF
+        # ligRFC2arff(exptName,activeIdxSet)
+        
+        # NB: No use of  ethresh on biggest runs
+        # lig2SpArff(exptName,r2fcTbl,ligCoordTbl,activeIdxSet,ethresh=cummTrueMaxE)
+        
+        lig2SpArff(exptName,ligTbl,r2fcTbl,ligCoordTbl,activeIdxSet)
             
     # sys.exit('done creating ARRF')
   
