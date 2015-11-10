@@ -1,9 +1,12 @@
-#       
-#           AutoDock | Raccoon2
+# VSResultsGenerator: process docking files for RACCOON2 interactions
+# v0.1 
+# 151109
+# rbelew@ucsd.edu
 #
-#       Copyright 2013, Stefano Forli
-#          Molecular Graphics Lab
-# v.0.4 (modified version to include vdw interactions)
+#  Using Raccoon2     
+#  Copyright 2013, Stefano Forli
+#  Molecular Graphics Lab
+#  v.0.4 (modified version to include vdw interactions)
 # 
 #############################################################################
 
