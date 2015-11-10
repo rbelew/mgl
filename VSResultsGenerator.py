@@ -1213,18 +1213,17 @@ if __name__ == '__main__':
     
     # defaults
     DEBUG = False
-    doInteractions = True
     rmsTol = 2.0
     mode = 1 # binding modes extracted from the result 
     header = "#name\tenergy\tligand_efficiency\ttotal_poses\treceptor\tfilename\n"
     suffix = "_Vina_VS"
     hbtol = 0.0
     
-    dir_root = '/Data/sharedData/coevol-HIV/WCG/DUDE/'
+    dir_root = '/Data/sharedData/coevol-HIV/WCG/DUDE/HIVRT/'
     out_root = '/Data/sharedData/coevol-HIV/WCG/processed/DUDE_151107/'
 
     DUDE_ReceptorTbl = {'ADA': dir_root+'ADA/x2E1Wdude.pdbqt',
-                        'HIVRT': dir_root+'HIVRT/x2ZD1_RT_NNRTI_NNRTInADJ--dudertnnrti.tar.gz',
+                        'HIVRT': dir_root+'x2ZD1_RT_NNRTI_NNRTInADJ.pdbqt',
                         'HIVPR': dir_root+'HIVPR/x3KF0_prASw0c0.pdbqt',
                         }
 
@@ -1237,6 +1236,7 @@ if __name__ == '__main__':
 
     c = 0
     prevProtein = None
+    generator = None
     for l in input_files:
         c+=1
             
@@ -1249,7 +1249,9 @@ if __name__ == '__main__':
             stemPath = path_root[len(dir_root):]
 
             bits = stemPath.split('/')
-            protein = bits[0]
+            # protein = bits[0]
+            # HACK to process just HIVRT
+            protein = 'HIVRT'
             
             if protein != prevProtein:
                 
@@ -1264,41 +1266,54 @@ if __name__ == '__main__':
                     print "processing: Problem in getCoords() for receptor [%s]: (%s) " % (receptorFile, e)
  
                 prevProtein = protein
-            
-            if DEBUG: print "processing", l
-            lig =  AutoDockVinaVsResult(input_files = l, 
+                if not generator == None:
+                    try:
+                        bht = generator.rec_bht
+                        freeBHtree(bht)
+                    except Exception,e:
+                        print 'processing: cant free bht?',e
+
+                generator =  AutoDockVinaVsResult(input_files = None, 
                     mode = mode,
                     receptor = receptor, 
-                    recname = None, 
-                    auto = True, 
-                    doInteractions = doInteractions,
+                    recname = recname, 
+                    auto = False, 
+                    doInteractions = True,
                     hbtol = hbtol)
-            pdbqt = lig.generatePDBQTplus()
-            # NB: the filename will be used to extract the root dir for the output file
+                print 'processing: bht built natoms=%d' % (len(generator.rec_bht_indices))
             
+            if DEBUG: print "processing", l
+            # NB: AutoDockVinaVsResult.setLigands() assumes l is single STRING
+            #     contra AutoDockVsResult.setLigands(), which assumes l is a list!
+            generator.setLigands(l)
+            
+            # NB: need to explicitly "guess" ligName as in AutoDockVinaVsResult.__init__
+            # since generator isn't being reconstructed for each ligand!
+            ligPath = os.path.splitext(l)[0]
+            lpbits = ligPath.split('/')
+            ligName = lpbits[-1]
+            generator.ligName = ligName
+            
+            generator.process()
+            pdbqt = generator.generatePDBQTplus()
+            
+            # NB: l's filename will be used to extract the root dir for the output file
             # post to parallel PROCESSED directories vs. next to existing PDBQT
             if not os.path.isdir(out_root+stemPath):
                 os.makedirs(out_root+stemPath)        
-            output_filename = out_root+stemPath+os.sep+lig.ligName+suffix+'.pdbqt' 
+            output_filename = out_root+stemPath+os.sep+generator.ligName+suffix+'.pdbqt' 
             fp = open(output_filename, 'w')
             fp.write(pdbqt)
             fp.close()
                 
-            try:
-                bht = lig.rec_bht
-                freeBHtree(bht)
-            except Exception,e:
-                print 'processing: cant free bht?',e
-                     
 
         except:
             print "ERROR: problems processing input :"
             print "file :", l
             print "error:", exc_info()[1]
             
-        # if c % 100 == 0: print c
-        
-        print 'ligandNo=',c
+        if DEBUG and c % 100 == 0: print "c=",c
+
             
 
 

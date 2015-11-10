@@ -26,7 +26,6 @@ import scipy.spatial.distance as distance
 from scipy.sparse.dok import dok_matrix
  
 import matplotlib
-from __builtin__ import False
 matplotlib.use('Agg') # ASSUME no windowing
 # Although many examples use pylab, it is no longer recommended.                                                         
 # import pylab as p
@@ -137,12 +136,6 @@ def infoGain(tp,fp,tn,fn):
     
     return (ig,prob,pos,neg)
 
-def rndEstr(e,ndig=0):
-    "round to nearest integral +ndig kcal"
-    fstr = '{0:0%d.%df}' % (ndig+4,ndig) # so two-digit energies sort correctly as strings!
-    rstr = fstr.format(e)
-    return rstr
-
 def ranges2list(rangeList):
     'invert bldRanges()'
     l = []
@@ -152,6 +145,12 @@ def ranges2list(rangeList):
         else:
             l += range(e[0],e[1]+1)
     return l
+
+def rndEstr(e,ndig=0):
+    "round to nearest integral +ndig kcal"
+    fstr = '{0:0%d.%df}' % (ndig+4,ndig) # so two-digit energies sort correctly as strings!
+    rstr = fstr.format(e)
+    return rstr
 
 def touchTimeDiff(f1,f2):
     '''given two files (earlyFile, lateFile), return seconds between their touch times
@@ -1573,13 +1572,8 @@ def getAtoms(mol):
 
 def mapLig2Features(ligIdx,fragments,ligMol):
 
-    obcM2C = ob.OBConversion()
-    obcM2C.SetOutFormat('can')
-    obcM2C.SetOptions("-i", obcM2C.OUTOPTIONS) # produce smiles without isomeric or stereo information, TJO, 9 Apr 15
-
-    obcC2M = ob.OBConversion()
-    obcC2M.SetInAndOutFormats('can','mol')
-    obcC2M.SetOptions("-i", obcC2M.INOPTIONS) # produce smiles without isomeric or stereo information, TJO, 9 Apr 15
+    obc = ob.OBConversion()
+    obc.SetInFormat('smi')
                 
     latoms = getAtoms(ligMol)
     
@@ -1594,7 +1588,7 @@ def mapLig2Features(ligIdx,fragments,ligMol):
     for fi,frag in enumerate(fragments):
         fragMol = ob.OBMol()
 
-        obcC2M.ReadString(fragMol,frag)
+        obc.ReadString(fragMol,frag)
         
         ## TJO 151021
         fragMol.DeleteHydrogens()
@@ -1604,29 +1598,23 @@ def mapLig2Features(ligIdx,fragments,ligMol):
         # print 'FRAGMENT',fatoms
         bindDict[fi]['fragment'] = frag
         bindDict[fi]['fatoms'] = fatoms
-    
-        fragQry = ob.CompileMoleculeQuery(fragMol)
-    
-        mapper = ob.OBIsomorphismMapper.GetInstance(fragQry)
-        
-        if fragQry and mapper:
-            isomorphs = ob.vvpairUIntUInt()
-            mapper.MapUnique(ligMol, isomorphs)
             
-            # print 'NIso=%d' % (len(isomorphs))
-            if len(isomorphs)==0:
-                # print "No isomorphs?!",zincid,fi,frag
+        # # TJO 11/6/2015
+        # new code block using smart pattern matching and mapping
+        # (vs. CompileMoleculeQuery(fragMol), OBIsomorphismMapper)
+        # intended to produce same data structures and mapping, but
+        # with fewer (no!) missing mappings
+        pat = ob.OBSmartsPattern()
+        if  pat.Init(frag) and pat.Match(ligMol):
+            if pat.NumMatches() == 0:
+                zincid = ligIdx2zinc(ligIdx)
+                print "No isomorphs?!",zincid,fi,frag
                 bindDict[fi]['maps'] = None
             else:
-      
                 maps = list()
-                for ii,isomorph in enumerate(isomorphs):
-                    maps.append([(a,b) for (a,b) in isomorph])
-    
-                    # print fi,ii, maps
-                    
+                for p in pat.GetUMapList():
+                    maps.append( [(a,b-1) for (a,b) in enumerate(p)] )
                 bindDict[fi]['maps'] = maps
-
         else:
             zincid = ligIdx2zinc(ligIdx)
             print "Error making mapper?!",zincid,fi,frag
@@ -1775,13 +1763,10 @@ def bldLig2frag(ligTbl,exptName,verbose=False):
         vpps = open(config.BindPPFile, 'w')
         vpps.close()
         
-    obcP2M = ob.OBConversion()
-    obcP2M.SetInAndOutFormats('pdbqt','mol')
-    
-    obcM2C = ob.OBConversion()
-    obcM2C.SetInAndOutFormats('mol','can')
-    obcM2C.SetOptions("-i", obcM2C.OUTOPTIONS) # produce smiles without isomeric or stereo information, TJO, 9 Apr 15
-   
+    obc = ob.OBConversion()
+    obc.SetInAndOutFormats('pdbqt','can')
+    obc.SetOptions("-i", obc.OUTOPTIONS) # produce smiles without isomeric or stereo information, TJO, 9 Apr 15
+       
     pat = ob.OBSmartsPattern();
    
     ngood=0
@@ -1811,20 +1796,13 @@ def bldLig2frag(ligTbl,exptName,verbose=False):
                 continue
         
         ligMol = ob.OBMol()
-        obcP2M.ReadFile(ligMol,pdbqf)
+        obc.ReadFile(ligMol,pdbqf)
         
-        ## 2do: need to convert ligMol to canonical smiles(with -i non-iso as above)
-        # so that conventions for aromaticity are consistently SMILES vs.
-        # smiles and pdbqt
-
-        # THEN convert to mol from this pdbqt->smiles->mol
-        # vs pdbqt -> mol
-       
         # NB RECAP works directly from ligmol    
         # don't need to build canonical string
         # except to include it in bindDict
         
-        ligSmilesC = obcM2C.WriteString(ligMol)
+        ligSmilesC = obc.WriteString(ligMol)
         # this returns both the canonSmiles string, but also PDBQT file name?!
         lsbits = ligSmilesC.split()
         canon = lsbits[0]
@@ -1839,7 +1817,7 @@ def bldLig2frag(ligTbl,exptName,verbose=False):
         currRecap.decide_multiples()
         currRecap.split()
         
-        ligRecap = obcM2C.WriteString(amol,True)
+        ligRecap = obc.WriteString(amol,True)
         # this returns both the canonSmiles string, but also PDBQT file name?!
         lrbits = ligRecap.split()
         recapStr = lrbits[0]
@@ -1853,7 +1831,7 @@ def bldLig2frag(ligTbl,exptName,verbose=False):
         ###################################
         
         # NB: augment bindDict with canon here vs. in mapLig2Features, 
-        # since obcM2C created here?
+        # since obc created here?
         
         bindDict['canon'] = canon
         
