@@ -3,7 +3,7 @@
 
 @version 1.0
 @date on 30 Aug 14
-@author: rbelew@ucsd.edu, dsantiago@scripps.edu
+@author: rbelew@ucsd.edu
 '''
 
 import sys
@@ -19,9 +19,17 @@ import shutil
 import json
 import argparse
 import datetime
+from string import strip
+
+import numpy as np
+
+import pybel
+ob = pybel.ob
 
 # from AutoDockTools.HelperFunctionsN3P import pathToList, getLines, percent
-from string import strip
+
+import config
+import analFAAH
 
 def getLines(filename, doStrip = False, removeEmpty=False):
     """ """
@@ -74,14 +82,15 @@ ADbatchRE = r'FAHV_(x?)(.+)_([0-9]+)_processed.tgz'
 ADbatchREPat = re.compile(ADbatchRE)
 
 InterTypes = ('hba', 'hbd', 'mtl','ppi','tpi','vdw')
-InterRE = r'(.*):.+():([A-Z]+[0-9]*)~~(.*):(.+):(.+)'
-
+InterRE = r'(.*):.+():([A-Za-z]+[0-9]*)~~(.*):(.+):(.+)'
 InterREPat = re.compile(InterRE)
+
 # vdw are different
 # :CYS65:SG
 # InterVDWRE = r'(.*):([A-Z]+[0-9]+):([A-Z]+)'
 InterVDWRE = r'(.*):(.+):(.+)'
 InterVDWREPat = re.compile(InterVDWRE)
+
 # ppi/tpi are different
 # B:HIS114~~(-4.295,-13.390,-20.427:-3.408,-10.290,-18.368)
 # cf. piStackingAndRingDetection.findLigRecPiStack()
@@ -98,17 +107,7 @@ def reducePlusInterDict(ligData):
     for itype in InterTypes:
         if len(ligData[itype]) > 0:
             rinterDict[itype] = []
-            if itype=='vdw':
-                for inter in ligData[itype]:
-                    # d:<0>:O3~~B:ARG57:N
-                    # :LEU63:CD1 -->actual example, matches InterVDWREPat \dns
-                    m = InterVDWREPat.match(inter)
-                    try:
-                        (rchain,raa,ratom) = m.groups()
-                        rinterDict[itype].append( (rchain,raa,ratom) )
-                    except:
-                        print 'reducePlusInterDict: bad vdw string?!',inter
-            elif itype=='ppi' or itype=='tpi':
+            if itype=='ppi' or itype=='tpi':
                 for inter in ligData[itype]:
                     # d:<0>:O3~~B:ARG57:N
                     m = InterPiREPat.match(inter)
@@ -118,6 +117,7 @@ def reducePlusInterDict(ligData):
                     except:
                         print 'reducePlusInterDict: bad ppi/tpi string?!',inter
             else:
+                # 151110: new processing now includes vdw ligand atoms
                 for inter in ligData[itype]:
                     # d:<0>:O3~~B:ARG57:N
                     m = InterREPat.match(inter)
@@ -219,8 +219,13 @@ def getGenericData_ADV(lines):
             nresult = int(l[len(nresultPrefix):].strip())
 
     return (rname,nresult)
+
+#############################################################################
+# eo rabbit
     
 def parseADPDBQT_ADV(f):
+    '''uses raccoon's routines to extract {recept,nresult,src,criteriaDict,
+    '''
     ligand = getLines(f)
     if not checkVSresult_ADV(ligand):
         return None
@@ -258,6 +263,56 @@ def parseADPDBQT_ADV(f):
     liginteract = getLigInteractions_ADV(ligand)
     reducedInterDict = reducePlusInterDict(liginteract)
     ligData.update(reducedInterDict)
+    
+    # do additional pdbqt access via OB
+    # to convert tpi, ppi ligandCenter to closest atom
+    if 'ppi' in ligData or 'tpi' in ligData:
+    
+        allMol = pybel.readfile('pdbqt', f)
+        # print 'len(allMol)',len(allMol)
+        ligMol = allMol.next() # ASSUME only one mol PDBQT
+        obmol = ligMol.OBMol
+        atomCoord = {}
+        for res in ob.OBResidueIter(obmol):
+            for obatom in ob.OBResidueAtomIter(res):
+                pbatom = pybel.Atom(obatom)
+                idx = pbatom.idx
+                laName = res.GetAtomID(obatom).strip()
+                laIdx = idx
+                laCoord = pbatom.coords
+                laType = pbatom.type
+                atomCoord[idx] = [laName,laType,laCoord]
+        
+        for itype in ['tpi' ,'ppi']:
+            if itype not in ligData:
+                continue
+            
+            newInterList = []
+            for inter in ligData[itype]:
+                #NB: ratom is really receptorCenter for tpi/ppi
+                (rchain,raa,rcenter,lcenter) = inter
+                minLA = None
+                minDist = 1.0e6
+                laTuple = tuple(eval(lcenter)) # NB: latomFull is a string
+                obLAnp = np.array(laTuple)
+                for laIdx in atomCoord:
+                    laName,laType,laCoord = atomCoord[laIdx]
+                    latype = analFAAH.getAtomType(laName)
+                    # 151109: only consider ligatoms *OTHER THAN* H, C
+                    if latype in config.VDWExcludedLigAtoms:
+                        continue
+                      
+                    rlifLAnp = np.array(laCoord)
+                    l2norm = np.linalg.norm(obLAnp - rlifLAnp)
+                    # print laIdx,atName,l2norm
+                    if l2norm < minDist:
+                        minLA = laIdx
+                        minDist = l2norm
+                        
+                ratom = ''
+                latomFull = atomCoord[minLA][0]
+                newInterList.append( (rchain,raa,ratom,latomFull) )          
+            ligData[itype] = newInterList
                    
     return ligData
         
@@ -265,7 +320,12 @@ def parseADPDBQT_ADV(f):
 # simplified, here, means that this should work for all batches after ??? Exp.# ???
 # because naming was simplified (by dns)
 # ADVsimple = r'fahv.x([a-zA-Z0-9]+)(_[A-Z0-9]*)*_(ZINC[0-9]+)(_[0-9]*)*_([0-9]+)_out_Vina_VS.pdbqt'
-ADVsimple = r'fahv.x([a-zA-Z0-9]+)_(.+)_([0-9]+)_out_Vina_VS.pdbqt'
+# fahv.x3KF0_prASw0c0_ZINC00147966_544588015_out_Vina_VS.pdbqt
+
+# 160110: ligand capturing part of qualified receptor?
+# fahv.x3KF0_prASw0c0_ZINC00147966_544588015_out_Vina_VS.pdbqt
+# ADVsimple = r'fahv.x([a-zA-Z0-9]+)_(.+)_([0-9]+)_out_Vina_VS.pdbqt'
+ADVsimple = r'fahv.x([a-zA-Z0-9_]+)_(.+)_([0-9]+)_out_Vina_VS.pdbqt'
 ADVsimplePat = re.compile(ADVsimple, re.IGNORECASE)
 
 def visit_ADV_tgz(tgzPath,exptname,recon,verbose):
@@ -290,7 +350,7 @@ def visit_ADV_tgz(tgzPath,exptname,recon,verbose):
         print 'visit_ADV_tgz: NTGZ=',len(procList)
         
     for isd,procPath in enumerate(procList):
-        # fahv.x3kf0A_ZINC00145439_2057149382_out_Vina_VS.pdbqt
+        
         procBits = os.path.split(procPath)
 
         # NB: don't need to capture batchNo; visitRpt_ADV_tgz() has it!
@@ -329,6 +389,71 @@ def visit_ADV_tgz(tgzPath,exptname,recon,verbose):
                                 
     shutil.rmtree(tmpDir)
     # print 'visit_ADV_tgz: done.',len(dataTbl)
+    
+    return dataTbl
+
+def visit_ADV(procPath,exptname,recon,verbose):
+    '''assume path already has processed files (aot/ tgzPath), as produced by process
+    '''
+
+    dataTbl = {}
+    # 2do: Py2.7 allows WITH context management! TODO
+# with tarfile.open(tgzPath) as subTar:
+# with tarfile.open(subTar) as dataDir:
+
+    # ASSUME: _VS "bar" style processed file names for ADV
+    # fahv.x4I7G_RT_NNRTIadj_wNNRTI_ZINC58421065_1_649284996_out_Vina_VS.pdbqt
+    # Exp79/Results_x3kf0A/FAHV_x3kf0A_0124403_processed.tgz example:
+    #  FAHV_x3kf0A_0124403_processed/ # (untarred dir)
+    #    fahv.x3kf0A_ZINC01569654_1113915765_out_Vina_VS.pdbqt
+
+    procList = glob.glob(procPath+'/fahv.*_out_Vina_VS.pdbqt')
+    if verbose:
+        print 'visit_ADV: NTGZ=',len(procList)
+        
+    for isd,procPath in enumerate(procList):
+        # fahv.x3kf0A_ZINC00145439_2057149382_out_Vina_VS.pdbqt
+        procBits = os.path.split(procPath)
+
+        # NB: don't need to capture batchNo; visitRpt_ADV_tgz() has it!
+        # /tmp/tmpmmBQ7D/FAHV_x3kf0A_0124412_processed
+        # dirBits = procBits[0].split('_')
+        # batchNo = int(dirBits[2])
+
+        procf = procBits[1]
+
+        # 160110: ligand capturing part of qualified receptor?
+        # fahv.x3KF0_prASw0c0_ZINC00147966_544588015_out_Vina_VS.pdbqt
+
+        # fahv.x3kf0A_ZINC00145439_2057149382_out_Vina_VS.pdbqt
+        
+        # ADVsimple = r'fahv.x([a-zA-Z0-9]+)_(.+)_([0-9]+)_out_Vina_VS.pdbqt'
+        
+        # lbpos = procf.find('_')
+        # rbpos = procf.rfind('_')
+        # assert (lbpos != -1 and rbpos != -1 and rbpos > lbpos), 'visit_ADV_tgz: bad procf?! %s' % (procf)
+        # ligand = procf[lbpos+1:rbpos]
+
+        mpath = ADVsimplePat.match(procf)
+        (receptor,ligand,workNo) = mpath.groups()
+        
+        # import pdb; pdb.set_trace()
+        
+        ###-------
+        ligData = parseADPDBQT_ADV(procPath)
+        ###-------
+        
+        if not(ligData):
+            print 'visit_ADV: invalid ADV file?!',procf, procPath
+            continue
+
+        dk = (exptname,receptor,ligand)
+        
+        if dk in dataTbl:
+            print 'visit_ADV: dup dataKey?!',dk
+            continue
+
+        dataTbl[dk] = ligData
     
     return dataTbl
 
@@ -422,13 +547,39 @@ def visitRpt_ADV_tgz(tgzPath,recon,batchTbl,outdir,tocs,exptname,batchNo,verbose
     
     return len(dataTbl)
 
-def mglTop_visit_ADV(ADV_topDir,outdir,exptList=None,recon=False,verbose=False):
+def visitRpt_ADV(tgzPath,recon,batchTbl,outdir,tocs,exptname,batchNo,verbose):
+    ''' get info, place in this table
+        info is extracted from enhanced pdbqt files inside tarball
+        assume path already has processed files (aot/ tgzPath), as produced by process
+    '''    
+
+    dataTbl = visit_ADV(tgzPath,exptname,recon,verbose)
+    if recon:
+        print 'visitRpt_ADV: Recon-only; no reporting'
+        return len(dataTbl)
+        
+    summf  = outdir+exptname+'/summ/ADV_summ_%07d.csv' % (batchNo)
+    interf = outdir+exptname+'/inter/ADV_inter_%07d.json' % (batchNo)
+    rptData_ADV(dataTbl,summf,interf,exptname,batchNo)
+    
+    #tocStr = '%s,%05d,%d,%s' % (exptname,ntgz,len(dataTbl),tgzPath)
+    tocStr = '%s,%d,%d,%s' % (exptname,batchNo,len(dataTbl),tgzPath)
+    if verbose:
+        print 'visitRpt_ADV toc:',tocStr
+            
+    tocs.write(tocStr+'\n')
+    # fun2watch! toc
+    tocs.flush(); os.fsync(tocs.fileno())
+    
+    return len(dataTbl)
+
+def mglTop_visit_ADV(ADV_topDir,outdir,tgzProc=True,exptList=None,recon=False,verbose=False):
     'recon stops after opening, parsing one file in first tgz'
     
     if exptList:
         print 'mglTop_visit_ADV: Explicit experiment list %s' % (str(exptList))
     else:
-        crawlPat = ADV_topDir+'/Exp*'
+        crawlPat = ADV_topDir+'Exp*'
         print 'mglTop_visit_ADV: Full crawl of %s' % (crawlPat)
         exptList = [os.path.split(exptPath)[1] for exptPath in glob.glob(crawlPat) ]
         
@@ -451,60 +602,70 @@ def mglTop_visit_ADV(ADV_topDir,outdir,exptList=None,recon=False,verbose=False):
         
         if verbose:
             print ' *',ie,exptPath
-            
-        try:
-            tst = open(outPath+'/tst.csv','w')
-        except:
-            print 'mglTop_visit_ADV: creating ExptOutput directory', (outPath)
+
+        if not os.path.isdir(outPath):
+            print 'mglTop_visit_ADV: creating ExptOutput directory',outPath
             os.makedirs(outPath)
+                        
         tocf = outPath+'/ADV_toc.csv'
         tocs = open(tocf,'w')
         #tocs.write('NTGZ,Data,Path\n')
         tocs.write('Experiment, Batch, Data, Path\n')
 
-        try:
-            tst = open(outPath+'/summ/tst.csv','w')
-        except:
-            print 'mglTop_visit_ADV: creating summ directory',outPath+'/summ'
-            os.makedirs(outPath+'/summ')
-        try:
-            tst = open(outPath+'/inter/tst.csv','w')
-        except:
-            print 'mglTop_visit_ADV: creating inter directory',outPath+'/inter'
-            os.makedirs(outPath+'/inter')
+        summDir = outPath+'/summ/'
+        if not os.path.isdir(summDir):
+            print 'mglTop_visit_ADV: creating summDir ',summDir
+            os.makedirs(summDir)
+
+        interDir = outPath+'/inter/'
+        if not os.path.isdir(interDir):
+            print 'mglTop_visit_ADV: creating interDir ',interDir
+            os.makedirs(interDir)
 
         batchTbl = {}
 
-        exptSubList = glob.glob(exptPath+'/Results_*')   # Results_* level dirs containing
-#                                                     FAHV_<rec>_<batch_num>_processed.tgz files
+        exptSubList = glob.glob(exptPath+'/Results_*/batch_*')   # Results_* level dirs containing processed.tgz files
+
+        # /Results_*/ may also contain compressed TGZ versions
+        exptSubList = [esp for esp in exptSubList if not esp.endswith('.tgz')]
+        
+        # exptSubList = glob.glob(exptPath+'/batch_*')
         print 'mglTop_visit_ADV: NSubExperiments=',len(exptSubList)
         for ise, exptSubPath in enumerate(exptSubList):
+            # exptSubPath =  /Data/sharedData/coevol-HIV/WCG/process2/Exp120/Results_x3KF0_prASw0c0/batch_0550340
             if verbose:
                 print ' **',ie,ise,exptSubPath
 
-            tgzList = glob.glob(exptSubPath+'/*.tgz') 
-            print 'mglTop_visit_ADV: NTGZ=',len(tgzList)
-            for jt,tgzPath in enumerate(tgzList):
-                if recon and jt > 0:
-                    print 'mglTop_visit_ADV: Recon-only; break'
-                    break
-
-                tgznow = os.path.split(tgzPath)[1]
-                mpath = ADbatchREPat.match(tgznow)
-                if mpath:
-                    (x, vinarec, vinabatch) = mpath.groups()
-                else:
-                    print 'mglTop_visit_ADV: bad match?!',tgznow
-                    continue
-                batchNo = int(vinabatch)
-                if verbose:
-                    print 'Attempting to analyze',tgznow 
-                                    
-                # process all enhanced pdbqt files in the processed batch file: ...
-                #
-                nparse = visitRpt_ADV_tgz(tgzPath,recon,batchTbl,outdir,tocs,exptname,batchNo,verbose)
-                #
-                totParse += nparse
+            if tgzProc:
+                tgzList = glob.glob(exptSubPath+'/*.tgz') 
+                print 'mglTop_visit_ADV: NTGZ=',len(tgzList)
+                for jt,tgzPath in enumerate(tgzList):
+                    if recon and jt > 0:
+                        print 'mglTop_visit_ADV: Recon-only; break'
+                        break
+                                        
+                        tgznow = os.path.split(tgzPath)[1]
+                        mpath = ADbatchREPat.match(tgznow)
+                        if mpath:
+                            (x, vinarec, vinabatch) = mpath.groups()
+                        else:
+                            print 'mglTop_visit_ADV: bad match?!',tgznow
+                            continue
+                        batchNo = int(vinabatch)
+                        if verbose:
+                            print 'mglTop_visit_ADV: Attempting to analyze',tgznow 
+    
+                        nparse = visitRpt_ADV_tgz(tgzPath,recon,batchTbl,outdir,tocs,exptname,batchNo,verbose)
+            else:
+                # exptSubPath = /Data/sharedData/coevol-HIV/WCG/process2/Exp120/batch_0550340
+                
+                bpos = exptSubPath.rfind('_')
+                bnos = exptSubPath[bpos+1:]
+                batchNo = int(bnos)
+                
+                nparse = visitRpt_ADV(exptSubPath,recon,batchTbl,outdir,tocs,exptname,batchNo,verbose)
+                    #
+            totParse += nparse
                 
         endTime = datetime.datetime.now()
         elapTime = endTime-startTime
@@ -817,6 +978,17 @@ def Local_Top_visit_ADV(fldir,outdir,exptname,sharedRecept,fileList,verbose=Fals
             # pathBits = ['', 'Data', 'sharedData', 'coevol-HIV', 'WCG', 'processed', 'SAMPL4', 'LEDGF', '', 's3NF8_A', 'AVX101118_0', 'AVX101118_0_VINoutput_Vina_VS.pdbqt']
             ligand = pathBits[-2]
             lib = RunName
+            
+        else:
+            # DUDE-151110
+            fname = pathBits[-1]
+            # HACK: ASSUME ligand ends with digits
+            for i in range(len(fname)-1,0,-1):
+                if fname[i].isdigit():
+                    eoLig = i 
+                    break
+            ligand = fname[:eoLig+1]
+            lib = RunName 
         
         if sharedRecept == None:
             if RunName == 'SAMPL4':
@@ -830,24 +1002,20 @@ def Local_Top_visit_ADV(fldir,outdir,exptname,sharedRecept,fileList,verbose=Fals
                 receptName = '??'
                 continue
         else:
-            fname = pathBits[-1]
-            ppos = fname.find('.')
-            receptName = fname[:ppos]
-#             receptPath = sharedRecept
+            rbits = sharedRecept.split('/')          
+            receptFile = rbits[-1]
+            ppos = receptFile.find('.')
+            receptName = receptFile[:ppos]
 
         dk = (exptname,receptName,ligand)
 
-        # assert dk not in allPaths, 'Local_Top_visit_ADV: dup ligand?! %s %s' % (lib,ligand)
-        if dk in allPaths:
-            print 'Local_Top_visit_ADV: dup dataKey?! %s' % (dk,)
-            ndup += 1
-            
         allPaths[dk] = path
         relPath = path.replace(ProcDir,'')
         outs.write('%s,%s,%s,%s,%s\n' % (exptname,lib,receptName,ligand,relPath))
                 
         if dk in dataTbl:
             print 'Local_Top_visit_ADV: dup dataKey?!',dk
+            ndup += 1
             continue
 
         dataTbl[dk] = ligData
@@ -928,8 +1096,6 @@ parser.add_argument("--recon",  action="store_true",help="Reconnaissance sniffin
 ### top-level run commands
 if __name__ == '__main__':
 
-    RunName = 'In-LEDGF' # 'focusedLib'
-
     ## mgl crawl of processed
     import socket
     HostName = socket.gethostname()
@@ -940,6 +1106,7 @@ if __name__ == '__main__':
     elif HostName == 'mgl3':
         print 'running on mgl3, slow(:'
         BaseDir = '/mgl/storage/wcg/'
+
     
     elif HostName.startswith('hancock'):
         print 'running local on hancock'
@@ -949,39 +1116,37 @@ if __name__ == '__main__':
         print 
         sys.exit( ('unknown host %s' % (HostName)) )
 
-    ProcDir =    BaseDir + 'processed/%s/'  % (RunName)
-    CrawlDir = BaseDir + 'crawl/%s/'  % (RunName)
-    SummRptDir = BaseDir + 'anal/%s/'  % (RunName)
+    # config.RunName = 'HIVPR_MB'
+    if len(sys.argv) < 2:
+        sys.exit('analFAAH: missing runName argument?!')
+    config.RunName = sys.argv[1]
 
-    if RunName == 'SAMPL4':
-        ProcDir += 'LEDGF/'
-        dockfsuffix = '*_VS.pdbqt'
-        cmdList = ['find', ProcDir, '-name', dockfsuffix]
+    ProcDir =    BaseDir + 'processed/%s/'  % (config.RunName)
+    
+    CrawlDir = BaseDir + 'crawl/%s/'  % (config.RunName) 
+    
+    config.VDWExcludedLigAtoms = ['H','C']
+
+    dockfsuffix = '*_VS.pdbqt'
+
+#         allProteins = DUDE_ReceptorTbl.keys()
+#         allProteins.sort()
+    AvailDockedProteins_151114 = ['ADA', 'AMPC', 'CDK2', 'EGFR', 'HIVPR', 'HIVRT', 'PYRD', 'ROCK1']     
+    AvailDockedProteins_151130 = ['ACES', 'HMDH', 'PGH2']
+       
+    for protein in AvailDockedProteins_151130:
+        # NB: no trailing slash on protDir; it results in double slashes in find's list of files!
+        protDir = ProcDir + protein 
+        receptName = config.DUDE_ReceptorTbl[protein]
+        receptFile = protDir + '/' + receptName + '.pdbqt'
+        cmdList = ['find', protDir, '-name', dockfsuffix]
         outstr = subprocess.check_output(cmdList)
         fileList = outstr.split()
-        print 'crawl_ADV: %s NFiles=%d' % (RunName,len(fileList))
-        receptor = None
-        
-    elif RunName == 'focusedLib':
-        dockfsuffix1 = '*_VS.pdbqt'
-        dockfsuffix2 = '*.VS.pdbqt'
+        crawlDir = CrawlDir + protein + '/'
+        if not os.path.isdir(crawlDir):
+            print 'crawl_ADV: creating CrawlDir directory',crawlDir
+            os.makedirs(crawlDir)
 
-        cmdList1 = ['find', ProcDir, '-name', dockfsuffix1]
-        outstr1 = subprocess.check_output(cmdList1)
-        fileList1 = outstr1.split()
-    
-        cmdList2 = ['find', ProcDir, '-name', dockfsuffix2]
-        outstr2 = subprocess.check_output(cmdList2)
-        fileList2 = outstr2.split()
-    
-        fileList = fileList1 + fileList2
-        
-        print 'crawl_ADV: %s NFiles=%d (_VS=%d .VS=%d)' % (RunName,len(fileList),len(fileList1),len(fileList2))
+        print 'crawl_ADV: %s protein=%s NFiles=%d' % (config.RunName,protein,len(fileList))
+        Local_Top_visit_ADV(protDir,crawlDir,config.RunName,receptFile,fileList)
 
-        receptor = '/Data/sharedData/coevol-HIV/WCG/processed/focusedLib/lib_v1.1/CCDKF115_dimer.pdbqt'
-
-    if not os.path.isdir(CrawlDir):
-        print 'crawl_ADV: creating CrawlDir directory',CrawlDir
-        os.makedirs(CrawlDir)
-
-    Local_Top_visit_ADV(ProcDir,CrawlDir,RunName,receptor,fileList)
