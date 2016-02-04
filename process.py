@@ -1,6 +1,7 @@
-# VSResultsGenerator: process docking files for RACCOON2 interactions
-# v0.1 
-# 151109
+# process: process docking files for RACCOON2 interactions
+#         ALSO CRAWL before tgz-ing processed files
+# v0.2
+# 160108
 # rbelew@ucsd.edu
 #
 #  Using Raccoon2     
@@ -10,22 +11,35 @@
 # 
 #############################################################################
 
+import datetime
+import time
+import os, sys
+from glob import glob  
+import re
+from sys import argv, exc_info
+import getopt
+import shutil
+import socket
+import tempfile
+import tarfile
 
-from mglutil.math.rmsd import RMSDCalculator
+import config
+import crawl_ADV
 
 from numpy import array, zeros, sqrt  
 from bhtree import * # bhtreelib
+
+from mglutil.math.rmsd import RMSDCalculator
+
 from CADD.Raccoon2.piStackingAndRingDetection import *  #(pi-stacking interatcion)
-import time
-import os, sys
+
 from CADD.Raccoon2.HelperFunctionsN3P import getCoords, pmvAtomStrip, getLines, quickdist, dist, percent, getAtype, atomCoord # TODO
+from CADD.Raccoon2.HelperFunctionsN3P import pathToList, writeList
 from CADD.Raccoon2.WaterProcessing import processHydroDocking
 
-from glob import glob  
-import os
-from sys import argv, exc_info
-import getopt
-from CADD.Raccoon2.HelperFunctionsN3P import pathToList, writeList
+## Utilities
+
+FloatRegEx = r'[-+]?\d*\.\d+|\d+'
 
 class VSDockingResultsGenerator:
     """VS result class for extracting the results (LE,LC) from a series of DLG files
@@ -1054,78 +1068,113 @@ class AutoDockVinaVsResult(VSDockingResultsGenerator):
         inside = False
         c = 0
         lines = getLines(self.input_files)
-        if "REMARK VINA RESULT" in lines[1]:
-            if DEBUG: print "[found Vina result pdbqt]"
-            for l in lines:
-                if l.strip():
-                    if "MODEL" in l: # initialize pose
-                        text_pose = []
-                        true_ligand = []
-                        coord = []
-                        flex_res = []
-                        c += 1
-                        in_res = False
-                    elif "ENDMDL" in l:
-                        coord = array( coord, 'f')
-                        if flex_res:
-                            flex_res = getCoords(flex_res) # transform coordinates and process them
-                                                           # as we do with receptor atoms   
-                        if atomCount == None:
-                            atomCount = len(coord)
-                        if atomCountFlex == None:
-                            atomCountFlex = len(flex_res)
-                        if len(coord) == atomCount:
-                            if len(flex_res) == atomCountFlex:
-                                # flex res atoms are added to the pose here
-                                self.poses.append( { "text" : text_pose, "coord" : coord, "energy" : e ,\
-                                    'source' : (os.path.basename(self.input_files)+":"+str(c)),
-                                    'true_ligand': true_ligand, "flex_res" : flex_res } ) 
-                                atype_list_complete = True
-                            else:
-                                # 150925: what is `d`?
-                                print mismatchMsg % ( 'Flex residue', self.ligName, 'd') #, getLines(d).index(l) )
+        if (Reprocess and "ADVS_Vina_result" not in lines[0]) or \
+            (not Reprocess and "REMARK VINA RESULT" not in lines[1]):
+            print "getPoses: WARNING! neither Vina nor ADVS output PDBQT file :",self.input_files
+            self.poses = []
+            return
+    
+        if DEBUG: print "[found Vina result pdbqt]"
+        nskip = 0
+        nempty = 0
+        defaultEnergy = 1000. 
+        
+        for il, l in enumerate(lines):
+            try:
+                if len(l) == 0:
+                    nempty += 1
+                    continue
+                    
+                if "MODEL" in l: # initialize pose
+                    text_pose = []
+                    true_ligand = []
+                    coord = []
+                    flex_res = []
+                    c += 1
+                    in_res = False
+                    e = defaultEnergy
+                elif "ENDMDL" in l:
+                    coord = array( coord, 'f')
+                    if flex_res:
+                        flex_res = getCoords(flex_res) # transform coordinates and process them
+                                                       # as we do with receptor atoms   
+                    if atomCount == None:
+                        atomCount = len(coord)
+                    if atomCountFlex == None:
+                        atomCountFlex = len(flex_res)
+                    if len(coord) == atomCount:
+                        if len(flex_res) == atomCountFlex:
+                            # flex res atoms are added to the pose here
+                            if e == defaultEnergy:
+                                print "getPoses: WARNING! e not set line=%d?!" % (il)
+                            self.poses.append( { "text" : text_pose, "coord" : coord, "energy" : e ,\
+                                'source' : (os.path.basename(self.input_files)+":"+str(c)),
+                                'true_ligand': true_ligand, "flex_res" : flex_res } ) 
+                            atype_list_complete = True
                         else:
-                            print mismatchMsg % ( 'Ligand', self.ligName, 'd') #, getLines(d).index(l) )
-                              
-                    elif l.startswith("BEGIN_RES"):
-                        in_res = True
-                        self.flexres = True # flex_res trigger
+                            # 150925: what is `d`?
+                            print mismatchMsg % ( 'Flex residue', self.ligName, 'd') #, getLines(d).index(l) )
+                    else:
+                        print mismatchMsg % ( 'Ligand', self.ligName, 'd') #, getLines(d).index(l) )
+                          
+                elif l.startswith("BEGIN_RES"):
+                    in_res = True
+                    self.flexres = True # flex_res trigger
+                    flex_res.append(l)
+                    text_pose.append(l)
+                elif "END_RES" in l: 
+                # elif l.startswith("END_RES"): # sf_150818 ??
+                    in_res = False
+                    flex_res.append(l)
+                    text_pose.append(l)
+                elif l.startswith("ATOM") or l.startswith("HETATM"):
+                    text_pose.append(l)
+                    if not in_res:
+                        true_ligand.append(l)
+                    if not in_res:
+                        atype = l.rsplit()[-1]
+                        if (not atype == "HD") or include_hydrogens : # HD should be excluded from array/RMSD calculation
+                            try:
+                                coord.append([float(l[30:38]),float(l[38:46]),float(l[46:54])])
+                                if not atype_list_complete: # FUTURE: to be used for the David's reclustering method
+                                    self.atomTypes.append( atype ) 
+                            except:
+                                print "getPoses: WARNING! error in parsing coords in file :",self.input_files
+                                self.problematic.append(self.input_files)
+                                break 
+                    else:
                         flex_res.append(l)
-                        text_pose.append(l)
-                    elif "END_RES" in l: 
-                    # elif l.startswith("END_RES"): # sf_150818 ??
-                        in_res = False
-                        flex_res.append(l)
-                        text_pose.append(l)
-                    elif l.startswith("ATOM") or l.startswith("HETATM"):
-                        text_pose.append(l)
-                        if not in_res:
-                            true_ligand.append(l)
-                        if not in_res:
-                            atype = l.rsplit()[-1]
-                            if (not atype == "HD") or include_hydrogens : # HD should be excluded from array/RMSD calculation
-                                try:
-                                    coord.append([float(l[30:38]),float(l[38:46]),float(l[46:54])])
-                                    if not atype_list_complete: # FUTURE: to be used for the David's reclustering method
-                                        self.atomTypes.append( atype ) 
-                                except:
-                                    print ">WARNING! error in parsing coords in file :",self.input_files
-                                    self.problematic.append(self.input_files)
-                                    break 
-                        else:
-                            flex_res.append(l)
-                    elif "REMARK VINA RESULT:" in l:
-                        values = l.split(":")[1]
-                        values = values.split()
-                        e = float(values[0])
-                        lbrms = float(values[1])
-                        ubrms = float(values[2])
-                        self.histogram.append([e, lbrms, ubrms])
-                    elif l.split(None, 1)[0] in accepted_kw:
-                        text_pose.append(l)
-            self.totRuns = len(self.poses)
-        else:
-            print ">WARNING! not a Vina output PDBQT file :",self.input_files
+                elif (not Reprocess and "REMARK VINA RESULT:" in l):
+                    values = l.split(":")[1]
+                    values = values.split()
+                    e = float(values[0])
+                    lbrms = float(values[1])
+                    ubrms = float(values[2])
+                    self.histogram.append([e, lbrms, ubrms])
+                elif (Reprocess and "ADVina_pose1>" in l):
+                    # USER    #     energy,    leff
+                    # USER    ADVina_pose1> -8.700,    -0.395
+                    gpos = l.find('>')
+                    postPrefix = l[gpos+1:]
+                    bits = re.findall(FloatRegEx, postPrefix)
+                    # bits = [b for b in l.split(' \t') if len(b) > 0]
+                    # bits2 = bits[2].split('\t')
+                    efield = bits[0]
+                    e = float(efield)
+                    # 2do: LB, UB from processed file?
+                    lbrms = 0. # was float(values[1])
+                    ubrms = 0. # was float(values[2])
+                    self.histogram.append([e, lbrms, ubrms])
+                    
+                elif l.split(None, 1)[0] in accepted_kw:
+                    text_pose.append(l)
+                else:
+                    nskip += 1
+            except Exception, e:
+                print 'getPoses: exception',e
+                
+        self.totRuns = len(self.poses)
+        if DEBUG: print "[NPose=%d NEmpty=%d NSkip=%d]" % (len(self.poses), nempty, nskip)
     
     def extractResultsPoses(self):
         """extract the best result (the first?) accordingly to Vina"""
@@ -1209,115 +1258,209 @@ class AutoDockVinaVsResult(VSDockingResultsGenerator):
             buff +="ENDMDL  %d\n" % ( p+1 )
         return buff
 
+Reprocess = True
+ReCrawl = True
 
 if __name__ == '__main__':
 
-    ## after dns-scripts/generate_vs_results_VINA.py
+    HostName = socket.gethostname()
+    if HostName == 'mgl0':
+        print 'running on mgl0, good!'
+        BaseDir = '/export/wcg/'
     
-    # defaults
+    elif HostName == 'mgl3':
+        print 'running on mgl3, slow(:'
+        BaseDir = '/mgl/storage/wcg/'
+
+    elif HostName.startswith('hancock'):
+        print 'running local on hancock'
+        BaseDir = '/Data/sharedData/coevol-HIV/WCG/'
+
+    elif HostName.startswith('mjq'):
+        print 'running local on mjq'
+        BaseDir = '/home/Data/coevol-HIV/WCG/'
+
+    else:
+        print 
+        sys.exit( ('unknown host %s' % (HostName)) )
+      
+    # process defaults
+      
+    Reprocess = True
+    ReCrawl = True
+    RemoveAfterTGZ = True
+    
+    # raccoon defaults
     DEBUG = False
     rmsTol = 2.0
     mode = 1 # binding modes extracted from the result 
     header = "#name\tenergy\tligand_efficiency\ttotal_poses\treceptor\tfilename\n"
     suffix = "_Vina_VS"
-    hbtol = 0.0
-    
-    dir_root = '/Data/sharedData/coevol-HIV/WCG/DUDE/HIVRT/'
-    out_root = '/Data/sharedData/coevol-HIV/WCG/processed/DUDE_151107/'
+    hbtol = 0.0 
 
-    DUDE_ReceptorTbl = {'ADA': dir_root+'ADA/x2E1Wdude.pdbqt',
-                        'HIVRT': dir_root+'x2ZD1_RT_NNRTI_NNRTInADJ.pdbqt',
-                        'HIVPR': dir_root+'HIVPR/x3KF0_prASw0c0.pdbqt',
-                        }
-
-    
     recursive = True
-    pattern = "*_out.pdbqt"
-    input_files = pathToList(dir_root, recursive = recursive, pattern = pattern)
+    dockPattern = '*_out_Vina_VS.pdbqt' # "*_out.pdbqt"
     
-    print 'processing: NDock=%d' % (len(input_files))
 
-    c = 0
-    prevProtein = None
-    generator = None
-    for l in input_files:
-        c+=1
-            
-        try:
-            path_root = os.path.dirname(l) 
-            if not path_root:
-                path_root = os.getcwd()
-            assert path_root.startswith(dir_root), 'processing: odd path_root?! %s without %s' % (path_root,dir_root)
-            # stem is everything beyond dir_root
-            stemPath = path_root[len(dir_root):]
+    if len(sys.argv) < 4:
+        sys.exit('process: missing arguments: dockDir, procDir, exptName ?!')
+        
+    DockDir = BaseDir + sys.argv[1] + '/'
+    ProcDir = BaseDir + sys.argv[2] + '/'
+    ExptName = sys.argv[3]
 
-            bits = stemPath.split('/')
-            # protein = bits[0]
-            # HACK to process just HIVRT
-            protein = 'HIVRT'
-            
-            if protein != prevProtein:
-                
-                assert protein in DUDE_ReceptorTbl, 'processing: unknown receptor?! %s' % (protein)
-                receptorFile = DUDE_ReceptorTbl[protein]
-                r = os.path.basename(receptorFile)
-                recname = os.path.splitext(r)[0]
-                print 'processing: Updating current receptor for %s with %s %s' % (protein,recname,receptorFile)
-                try:
-                    receptor = getCoords(getLines(receptorFile))
-                except Exception, e:
-                    print "processing: Problem in getCoords() for receptor [%s]: (%s) " % (receptorFile, e)
+    begTime = datetime.datetime.now()
+    begTimeStr = begTime.strftime('%y%m%d_%H%M%S')
+
+    print '<process "%s" %s>' % (argv[1:],begTimeStr)
+    
+    if Reprocess:
+        tarFiles = glob(DockDir+'*_processed.tgz')
+    else:
+        sys.exit('process: not tested on original docked vs reprocessed files?!')
+
+    if ReCrawl:
+        CrawlDir = BaseDir + 'crawl2/'
+         
+    ## Phase0: Re/process
+    
+    print 'process: NTarfiles=%d' % (len(tarFiles))
+    for ip,tgzPath in enumerate(tarFiles):
+     
+        # tgzPath = '/Data/sharedData/coevol-HIV/WCG/processed/Exp120/Results_x3KF0_prASw0c0/FAHV_x3KF0_prASw0c0_0550347_processed.tgz'
+        tmpDir = tempfile.mkdtemp()
+        allTar = tarfile.open(tgzPath)
+        allTar.extractall(tmpDir)
+         
+        fname = tgzPath.split('/')[-1]
+        bits = fname.split('_')
+        pathReceptor = bits[1]
+        protRoot = '_'.join(bits[1:3])
+        batch = bits[3]
+             
+        outRoot = ProcDir + ExptName + '/' 
+                 
+        input_files = pathToList(tmpDir, recursive = recursive, pattern = dockPattern)
+             
+        print 'process: Expt=%s NDock=%d %s' % (ExptName,len(input_files), tgzPath)
+         
+        prevReceptor = None
+        generator = None
+        for fi,l in enumerate(input_files):
+                     
+            try:
+                path_root = os.path.dirname(l) 
+                if not path_root:
+                    path_root = os.getcwd()
+    
+                outDir = outRoot + "Results_" + protRoot +"/batch_"+ batch + '/'
+                   
+                if not os.path.isdir(outDir):
+                    os.makedirs(outDir)
+                                         
+                if pathReceptor != prevReceptor:
+                         
+                    # stem is everything beyond protRoot
+                    stemPath = path_root[len(protRoot):]
+                    bits = stemPath.split('/')
+     
+                    receptPath = path_root + '/' + protRoot + '.pdbqt'
+                    print 'process: Updating current receptor for %s with %s %s' % (ExptName,pathReceptor,receptPath)
+                              
+                    prevReceptor = pathReceptor
+                    if not generator == None:
+                        try:
+                            bht = generator.rec_bht
+                            freeBHtree(bht)
+                        except Exception,e:
+                            print 'process: cant free bht?',e
+         
+                    generator =  AutoDockVinaVsResult(input_files = None, 
+                        mode = mode,
+                        receptor = receptPath, 
+                        recname = pathReceptor, 
+                        auto = False, 
+                        doInteractions = True,
+                        hbtol = hbtol)
+                    print 'process: bht built natoms=%d' % (len(generator.rec_bht_indices))
+                        
+                    ## copy receptor to outDir
+                    shutil.copy(receptPath, outDir)
+                     
+                if DEBUG: print "processing", l
+                # NB: AutoDockVinaVsResult.setLigands() assumes l is single STRING
+                #     contra AutoDockVsResult.setLigands(), which assumes l is a list!
+                generator.setLigands(l)
+                     
+                # NB: need to explicitly "guess" ligName as in AutoDockVinaVsResult.__init__
+                # since generator isn't being reconstructed for each ligand!
+                ligPath = os.path.splitext(l)[0]
+                lpbits = ligPath.split('/')
+                ligName = lpbits[-1]
+                generator.ligName = ligName
+                     
+                generator.process()
+                pdbqt = generator.generatePDBQTplus()
+                                                         
+                if Reprocess: # or generator.ligName.endswith(suffix):
+                    output_filename = outDir + generator.ligName+'.pdbqt' 
+                else:
+                    output_filename = outDir + generator.ligName+suffix+'.pdbqt' 
+                fp = open(output_filename, 'w')
+                fp.write(pdbqt)
+                fp.close()     
+         
+            except Exception,e:
+                print "ERROR: problems processing input :"
+                print "file :", l
+                print "error:", e
+                     
+            if DEBUG and fi % 100 == 0: print "inputFile=%d" % (fi)
+             
+            # eo input_files loop
+                 
+        elapTime = datetime.datetime.now() - begTime
+        print '<process tarfileIdx=%d  %s sec>' % (ip,elapTime.seconds)
+     
+        # eo tarFiles loop
+    
+    elapTime = datetime.datetime.now() - begTime
+    print '<process: done %s sec>' % (elapTime.seconds)
+
+#     sys.exit('process: done (without recrawling, building TGZ)')
+     
+    ## Phase 1: recrawl prior to re-TGZ-ing into archives
+      
+    if ReCrawl:
+        crawl_ADV.mglTop_visit_ADV(ProcDir,CrawlDir,tgzProc=False,verbose=True)
+          
+    elapTime = datetime.datetime.now() - begTime
+    print '<process recrawling done %s sec>' % (elapTime.seconds)
  
-                prevProtein = protein
-                if not generator == None:
-                    try:
-                        bht = generator.rec_bht
-                        freeBHtree(bht)
-                    except Exception,e:
-                        print 'processing: cant free bht?',e
+    # sys.exit('process: done (without building TGZ)')
 
-                generator =  AutoDockVinaVsResult(input_files = None, 
-                    mode = mode,
-                    receptor = receptor, 
-                    recname = recname, 
-                    auto = False, 
-                    doInteractions = True,
-                    hbtol = hbtol)
-                print 'processing: bht built natoms=%d' % (len(generator.rec_bht_indices))
-            
-            if DEBUG: print "processing", l
-            # NB: AutoDockVinaVsResult.setLigands() assumes l is single STRING
-            #     contra AutoDockVsResult.setLigands(), which assumes l is a list!
-            generator.setLigands(l)
-            
-            # NB: need to explicitly "guess" ligName as in AutoDockVinaVsResult.__init__
-            # since generator isn't being reconstructed for each ligand!
-            ligPath = os.path.splitext(l)[0]
-            lpbits = ligPath.split('/')
-            ligName = lpbits[-1]
-            generator.ligName = ligName
-            
-            generator.process()
-            pdbqt = generator.generatePDBQTplus()
-            
-            # NB: l's filename will be used to extract the root dir for the output file
-            # post to parallel PROCESSED directories vs. next to existing PDBQT
-            if not os.path.isdir(out_root+stemPath):
-                os.makedirs(out_root+stemPath)        
-            output_filename = out_root+stemPath+os.sep+generator.ligName+suffix+'.pdbqt' 
-            fp = open(output_filename, 'w')
-            fp.write(pdbqt)
-            fp.close()
-                
+    ## Phase2: Compress newly processed files
+    
+    # NB: capture both all Results_ directories and batch_ TGZ files within 
+    batchDirList = glob(ProcDir+ExptName+'/Results_*/batch_*')
+    print 'process: TGZ-ing %d directories' % (len(batchDirList))
+    
+    for ip,batchPath in enumerate(batchDirList):
+        pbits = batchPath.split('/')
+        resultDir = pbits[-2]
+        batchDir = pbits[-1]    # NB: use batchDir as archive name in tar
 
-        except:
-            print "ERROR: problems processing input :"
-            print "file :", l
-            print "error:", exc_info()[1]
-            
-        if DEBUG and c % 100 == 0: print "c=",c
+        tgzFile = tarfile.open( (ProcDir+ExptName+'/'+resultDir+'/' + batchDir+".tgz"), "w|gz")
 
-            
+        # NB: Directories are added recursively by default. 
+        tgzFile.add(batchPath, arcname=batchDir)
+        
+        # tgzFile.list()
+        
+        tgzFile.close()
 
+    elapTime = datetime.datetime.now() - begTime
+    print '<process done compressing %s sec>' % (elapTime.seconds)
 
-
+    # if RemoveAfterTGZ:
+        
