@@ -27,7 +27,7 @@ import tempfile
 import tarfile
 
 import config
-import crawl_ADV
+# import crawl_ADV
 
 from numpy import array, zeros, sqrt  
 from bhtree import * # bhtreelib
