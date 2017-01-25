@@ -1,7 +1,10 @@
 # process: process docking files for RACCOON2 interactions
 #		 ALSO CRAWL before tgz-ing processed files
-# v0.2
-# 160108
+#
+# v0.3: unique atom naming; 
+#		RestrictReceptList argument; 
+#		allow reprocessing of previously processed _VS files
+# 170125
 # rbelew@ucsd.edu
 #
 #  Using Raccoon2	 
@@ -703,6 +706,12 @@ class AutoDockVsResult(VSDockingResultsGenerator):
 						flex_res.append(l)
 						text_pose.append(l)
 					elif l.startswith("ATOM") or l.startswith("HETATM"): # if the line is atom but *not* flexres
+
+						# 160907: ensure atoms have unique name
+						atom = l[12:16].strip()
+						if not atom[-1:].isdigit():
+							l = indexAtom(l)
+
 						text_pose.append(l)
 						if not in_res:
 							true_ligand.append(l)
@@ -1131,6 +1140,14 @@ class AutoDockVinaVsResult(VSDockingResultsGenerator):
 					flex_res.append(l)
 					text_pose.append(l)
 				elif l.startswith("ATOM") or l.startswith("HETATM"):
+					
+					# 160907: ensure atoms have unique name
+					atom = l[12:16].strip()
+					if not atom[-1:].isdigit():
+						l2 = indexAtom(l)
+						# print '*%s\norig:%smod: %s' % (self.ligName,l,l2)
+						l = l2
+
 					text_pose.append(l)
 					if not in_res:
 						true_ligand.append(l)
@@ -1263,6 +1280,71 @@ class AutoDockVinaVsResult(VSDockingResultsGenerator):
 			buff +="ENDMDL  %d\n" % ( p+1 )
 		return buff
 
+import string
+i2bdigs = string.digits + string.letters
+def int2base(x, base=len(i2bdigs)):
+	if x < 0: sign = -1
+	elif x == 0: return i2bdigs[0]
+	else: sign = 1
+	x *= sign
+	digits = []
+	while x:
+		digits.append(i2bdigs[x % base])
+		x /= base
+	if sign < 0:
+		digits.append('-')
+	digits.reverse()
+	return ''.join(digits)
+
+def indexAtomBig(line):
+	'''insure all atoms have unique serial number
+	BIG: uses base62 i2bdigs-int2base
+	BUT: FAAHA.getAtomIndex() depends on only digits!(:
+	'''
+	
+	atomSerialNo = line[6:11]
+	atomName = line[12:16].strip()
+	try:
+		atomIdx = int(atomSerialNo.strip())
+	except:
+		print 'indexAtomBig: odd serialNo?!',line
+		atomIdx = 0
+
+	if atomIdx > (len(i2bdigs)**(4-len(atomName)))-1:
+		print 'indexAtomBig: atom serialNo too big',line
+		atomIdxS = '0'
+	else:
+		atomIdxS = '%s' % int2base(atomIdx)
+		
+	newAtom = '%4s' % (atomName + atomIdxS)
+	
+	newLine = line[:11] + newAtom + line[15:]
+	return newLine
+
+def indexAtom(line):
+	'''insure all atoms have unique serial number
+	SIMPLE: uses only digit suffices
+	'''
+	
+	atomSerialNo = line[6:11]
+	atomName = line[12:16].strip()
+	try:
+		atomIdx = int(atomSerialNo.strip())
+	except:
+		print 'indexAtom: odd serialNo?!',line
+		atomIdx = 0
+
+	if atomIdx > (10**(4-len(atomName)))-1:
+		print 'indexAtom: atom serialNo too big',line
+		atomIdxS = '0'
+	else:
+		atomIdxS = '%s' % int(atomIdx)
+		
+	newAtom = '%4s' % (atomName + atomIdxS)
+	
+	newLine = line[:11] + newAtom + line[15:]
+	return newLine
+
 if __name__ == '__main__':
 
 	HostName = socket.gethostname()
@@ -1296,17 +1378,24 @@ if __name__ == '__main__':
 	# 160523: Local (hancock) reprocessing of Exp96-LEDGF
 	# "['Exp96-LEDGF']" True False "['x3AO1_IN_LEDGF', 'x3AO2_IN_LEDGF']"
 	
+	# 160819: reprocess rikPR253
+	# "['rikPR253']" True False False "['x3KF0_PRAS']"
+	
+	# 160825: ALLINI 
+	# "['ALLINI']" True True False "['x3AO1']"
+	
 	if len(sys.argv) < 4:
-		sys.exit('process: missing arguments: exptName, reprocess, makeBatches ?!')		
+		sys.exit('process: missing arguments: exptNameList, reprocess, makeBatches [RestrictReceptList]? ?!')		
 
 	ExptNameList = eval(sys.argv[1])
 	config.Reprocess = eval(sys.argv[2])  # rerunning process over processed (.VS) file vs. original dockings
 	makeBatches = eval(sys.argv[3])
+	config.FAAHRun = eval(sys.argv[4])
 
 	print 'process: arguments=%s' % (sys.argv)
 
-	if len(sys.argv) ==5:
-		RestrictReceptList = eval(sys.argv[4])
+	if len(sys.argv) ==6:
+		RestrictReceptList = eval(sys.argv[5])
 	else:
 		RestrictReceptList = []
 		
@@ -1344,7 +1433,8 @@ if __name__ == '__main__':
 
 	print '<process "%s">' % (ExptNameList)
 	print '\thost=%s' % (HostName)
-	print '\treprocess=%s\n\tmakeBatches=%s\n\tbatchSize=%d' % (config.Reprocess,makeBatches,batchSize)
+	print '\treprocess=%s\n\tmakeBatches=%s\n\tFAAHRun=%s\n\tbatchSize=%d' % \
+		(config.Reprocess,makeBatches,config.FAAHRun,batchSize)
 	print '\tRestrictReceptList=%s' % (RestrictReceptList)
 
 	for ExptName in ExptNameList:
@@ -1363,7 +1453,12 @@ if __name__ == '__main__':
 
 		print '<processExpt "%s" %s>' % (ExptName,begTimeStr)
 	
-		resultDirList = glob(DockDir+'Results_*')
+		if config.FAAHRun:
+			matchFile = 'Results_*'
+		else:
+			matchFile = '*'
+		resultDirList = glob(DockDir+matchFile)
+		resultDirList = [d for d in resultDirList if os.path.isdir(d)]
 		resultDirList.sort()
 					
 		print 'process: NResultDir=%d' % (len(resultDirList))
@@ -1371,8 +1466,11 @@ if __name__ == '__main__':
 			# rdir = /Data/sharedData/coevol-HIV/WCG/processed/Exp96_LEDGF/Results_x3AO1_IN_LEDGF
 			spos = rdir.rfind('/')
 			dirName = rdir[spos+1:]
-			upos = dirName.find('_')
-			receptName = dirName[upos+1:]
+			if config.FAAHRun:
+				upos = dirName.find('_')
+				receptName = dirName[upos+1:]
+			else:
+				receptName = dirName
 			
 			if len(RestrictReceptList) > 0 and receptName not in RestrictReceptList:
 				print 'process: Expt=%s RdirIdx=%d Recept=%s not in RestrictReceptList; skipping' % (ExptName,ird,receptName)
@@ -1391,43 +1489,58 @@ if __name__ == '__main__':
 			prevReceptor = None
 			generator = None
 				
-			fileList = glob(rdir+'/FAHV_*_processed.tgz')
+			if config.FAAHRun:
+				fileList = glob(rdir+'/FAHV_*_processed.tgz')
+				unpackTar = True
+			else:
+				# allList = glob(rdir+'/*')
+				# fileList =  glob(rdir+'/*_out_Vina_VS.pdbqt')
+				fileList =  glob(rdir+'/*.pdbqt')
+				unpackTar = False
+				
 			fileList.sort()
 	
 			print 'process: Expt=%s RdirIdx=%d Recept=%s NBatch=%d' % (ExptName,ird,receptName,len(fileList))
 			for tpi,tgzPath in enumerate(fileList):
 				# tgzPath = '/Data/sharedData/coevol-HIV/WCG/processed/Exp120/Results_x3KF0_prASw0c0/FAHV_x3KF0_prASw0c0_0550347_processed.tgz'
 	
-				searchDir = tempfile.mkdtemp()
-				allTar = tarfile.open(tgzPath)
-				print 'process: Extracting %s' % (tgzPath)		
-				allTar.extractall(searchDir)
-				tgzBits = tgzPath.split('/')
-				tballName = tgzBits[-1]
-				tballBits = tballName.split('_')
-				
-				# ASSUME batchno is last part of name prior to "_processed"
-				batchName = tballBits[-2]
-				batch = int(batchName)
-	
-				ppos = tballName.find('.')
-				tballName = tballName[:ppos]
-				tballPath = searchDir + '/' + tballName
-				input_files = pathToList(tballPath, recursive = False, pattern = dockPattern)
+				if unpackTar:
+					searchDir = tempfile.mkdtemp()
+					allTar = tarfile.open(tgzPath)
+					print 'process: Extracting %s' % (tgzPath)		
+					allTar.extractall(searchDir)
+					tgzBits = tgzPath.split('/')
+					tballName = tgzBits[-1]
+					tballBits = tballName.split('_')
+					
+					# ASSUME batchno is last part of name prior to "_processed"
+					batchName = tballBits[-2]
+					batch = int(batchName)
+		
+					ppos = tballName.find('.')
+					tballName = tballName[:ppos]
+					tballPath = searchDir + '/' + tballName
+					input_files = pathToList(tballPath, recursive = False, pattern = dockPattern)
+					rootDir = tballPath
+				else:
+					input_files = fileList
+					# HACK: put all process2 into same batch dir
+					rootDir = rdir
 				
 				if makeBatches:
 					print 'process: batching %d dockings into %d batches' % (len(input_files),batchSize)
 					nbatchLig = 0
 					batch = 0
-		
-				outDir = ProcDir + '%s/batch_%07d/' % (receptName,batch) 
+					outDir = ProcDir + '%s/batch_%07d/' % (receptName,batch)
+				else:
+					outDir = ProcDir + '%s/' % (receptName)
 								   
 				if not os.path.isdir(outDir):
 					os.makedirs(outDir)
 					
 				# Cache structures
 				# NB: use changed structReceptPath as indication that we need a new generator
-				procReceptPath = tballPath + '/' + receptName + '.pdbqt'
+				procReceptPath = rootDir + '/' + receptName + '.pdbqt'
 				if not os.path.exists(procReceptPath):
 					sys.exit('process: Missing receptor?! '+procReceptPath)
 	
@@ -1457,16 +1570,21 @@ if __name__ == '__main__':
 						recname = protRoot, 
 						auto = False, 
 						doInteractions = True,
+						debug = DEBUG,
 						hbtol = hbtol)
 					print 'process: bht built natoms=%d' % (len(generator.rec_bht_indices))
 										
 				ndock = len(input_files)
 				print 'process: Expt=%s RdirIdx=%d TPI=%d NDock=%d' % (ExptName,ird,tpi,ndock)
 				
-				for fi,l in enumerate(input_files):
-							 
+				for fi,filename in enumerate(input_files):
+					if filename == procReceptPath:
+						print 'skipping receptor PDBQT',filename
+						continue
+					
+					savReprocess = 	False
 					try:
-						path_root = os.path.dirname(l) 
+						path_root = os.path.dirname(filename) 
 						if not path_root:
 							path_root = os.getcwd()
 			
@@ -1477,22 +1595,28 @@ if __name__ == '__main__':
 								nbatchLig = 1
 							else:
 								nbatchLig += 1
+
+						# NB: ALLINI experiments involve mix of processed and not!
+						if config.Reprocess and filename.find(suffix) == -1:
+							print 'process: Reprocess=True but PDBQT without _VS suffix processed anyway?', filename
+							savReprocess = 	True
+							config.Reprocess = False
 													 
-						if DEBUG: print "processing", l
-						# NB:    AutoDockVinaVsResult.setLigands() assumes l is single STRING
-						# contra AutoDockVsResult.setLigands(), which assumes l is a list!
-						generator.setLigands(l)
+						if DEBUG: print "processing", filename
+						# NB:    AutoDockVinaVsResult.setLigands() assumes filename is single STRING
+						# contra AutoDockVsResult.setLigands(), which assumes filename is a list!
+						generator.setLigands(filename)
 							 
 						# NB: need to explicitly "guess" ligName as in AutoDockVinaVsResult.__init__
 						# since generator isn't being reconstructed for each ligand!
-						ligPath = os.path.splitext(l)[0]
+						ligPath = os.path.splitext(filename)[0]
 						lpbits = ligPath.split('/')
 						ligName = lpbits[-1]
 						generator.ligName = ligName
 							 
 						generator.process()
 						pdbqt = generator.generatePDBQTplus()
-																 
+										 
 						if config.Reprocess: # or generator.ligName.endswith(suffix):
 							output_filename = outDir + generator.ligName+'.pdbqt' 
 						else:
@@ -1503,24 +1627,33 @@ if __name__ == '__main__':
 				 
 					except Exception,e:
 						print "ERROR: problems processing input :"
-						print "file :", l
+						print "file :", filename
 						print "error:", e
 							 
+					if savReprocess:
+						config.Reprocess = True
+						savReprocess = False
+						
 					if verbose and fi % 1000 == 0: print "NInputFile=%d" % (fi)
 					 
 					# eo input_files loop
 				
 				# eo tgz batch loop
 				# NB: need to remove even tempdir, or risk overfilling /tmp!
-				shutil.rmtree(searchDir, True)
-				totFiles += ndock
-				elapTime = datetime.datetime.now() - begTime
-				print '<process Expt=%s RdirIdx=%d TPI=%d TotDock=%d %s sec>' % (ExptName,ird,tpi,totFiles,elapTime.total_seconds)
+				if unpackTar:
+					shutil.rmtree(searchDir, True)
+					totFiles += ndock
+					elapTime = datetime.datetime.now() - begTime
+					print '<process Expt=%s RdirIdx=%d TPI=%d TotDock=%d %s sec>' % (ExptName,ird,tpi,totFiles,elapTime.total_seconds())
+				else:
+					totFiles = ndock
+					# NB: only one time thru filelist
+					break
 			
 			elapTime = datetime.datetime.now() - begTime
-			print '<process ResultDir=%d %s Totdock=%d %s sec>' % (ird,receptName, totFiles, elapTime.total_seconds)
+			print '<process ResultDir=%d %s Totdock=%d %s sec>' % (ird,receptName, totFiles, elapTime.total_seconds())
 	
 		elapTime = datetime.datetime.now() - begTime
-		print '</processExpt: Expt=%s done %s sec>' % (ExptName,elapTime.total_seconds)
+		print '</processExpt: Expt=%s done %s sec>' % (ExptName,elapTime.total_seconds())
 		
 	print 'process: done!' 
